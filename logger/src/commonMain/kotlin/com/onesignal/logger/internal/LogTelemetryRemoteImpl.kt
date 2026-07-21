@@ -48,7 +48,7 @@ internal class LogTelemetryRemoteImpl(
     private var cachedResourceAttributes: Map<String, String>? = null
 
     private val batchProcessor =
-        LogBatchProcessor(
+        LogBatchProcessor<EncodableRecord>(
             scope = scope,
             maxQueueSize = MAX_QUEUE_SIZE,
             maxBatchSize = MAX_BATCH_SIZE,
