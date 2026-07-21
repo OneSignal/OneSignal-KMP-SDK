@@ -66,15 +66,16 @@ open a version-bump PR against the iOS SDK's SPM/CocoaPods manifest.
 
 ### Required configuration (one-time)
 
-The Android bump PR is opened by a **GitHub App** (the default `GITHUB_TOKEN` cannot
-write to other repositories). Create an app in the OneSignal org with **Contents:
-write** and **Pull requests: write**, install it on `OneSignal-Android-SDK`, and add
-these secrets to this repo:
+The Android bump PR is opened by a **reusable workflow in the Android repo**
+(`.github/workflows/bump-kmp-submodule.yml`), which this workflow calls and passes the
+shared org push token to — the same `GH_PUSH_TOKEN` used across the other OneSignal SDK
+repos (`sdk-shared`, the wrapper SDKs, etc.). No dedicated GitHub App or new secret is
+created; the default `GITHUB_TOKEN` cannot write to another repo, but `GH_PUSH_TOKEN`
+can.
 
-| Secret | Value |
-| --- | --- |
-| `KMP_RELEASE_APP_ID` | The GitHub App's App ID |
-| `KMP_RELEASE_APP_PRIVATE_KEY` | The App's generated private key (PEM) |
+To enable it, an org admin grants this repo access to the existing org secret:
+**Org → Settings → Secrets and variables → Actions → `GH_PUSH_TOKEN` → Repository
+access → add `OneSignal-KMP-SDK`.**
 
-Without these, run the workflow with **open_android_pr** unchecked to tag + release
-only, then bump the Android submodule manually.
+Without that access, run the workflow with **open_android_pr** unchecked to tag +
+release only, then bump the Android submodule manually.
