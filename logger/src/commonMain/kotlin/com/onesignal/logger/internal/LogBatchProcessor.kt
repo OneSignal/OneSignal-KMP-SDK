@@ -37,7 +37,12 @@ internal class LogBatchProcessor<T>(
             while (isActive) {
                 // Wake on either the schedule delay or an explicit size-triggered signal.
                 withTimeoutOrNull(scheduleDelayMillis) { flushSignal.receive() }
-                drainAndExport()
+                try {
+                    drainAndExport()
+                } catch (_: Exception) {
+                    // A single bad export must not kill the consumer — otherwise later
+                    // records only ship if something explicitly calls flush().
+                }
             }
         }
     }

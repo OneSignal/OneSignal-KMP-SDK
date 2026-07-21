@@ -3,9 +3,14 @@ package com.onesignal.logger
 /**
  * Platform-agnostic crash reporter. Persists a captured crash so it can be shipped
  * on the next launch.
+ *
+ * Synchronous by design: host uncaught-exception / signal handlers must finish the
+ * write before the process dies. On iOS a `suspend` API would bridge to an async
+ * completion handler and could miss the write.
  */
 interface ILogCrashReporter {
-    suspend fun saveCrash(crash: CrashData)
+    @Throws(Exception::class)
+    fun saveCrash(crash: CrashData)
 }
 
 /**

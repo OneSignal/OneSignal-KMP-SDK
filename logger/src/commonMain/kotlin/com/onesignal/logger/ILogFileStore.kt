@@ -38,8 +38,12 @@ interface ILogFileStore {
      * runs on the crashing thread inside the uncaught-exception handler and must
      * complete the write synchronously before the process dies. Implementations must
      * keep it cheap and never offload to another thread/queue on this path.
+     *
+     * @return `true` when the bytes were durably written; `false` on swallowed I/O
+     *   failure so callers can avoid logging a false "saved" success.
      */
-    fun save(bytes: ByteArray)
+    @Throws(Exception::class)
+    fun save(bytes: ByteArray): Boolean
 
     /**
      * Returns all readable entries whose age is at least [minAgeMillis]. The age
@@ -50,8 +54,10 @@ interface ILogFileStore {
      * on a background dispatcher — keeping the shared upload pipeline off the caller's
      * thread on every platform, and bridging to Swift `async` on iOS.
      */
+    @Throws(Exception::class)
     suspend fun listReadable(minAgeMillis: Long): List<StoredLogFile>
 
     /** Deletes the entry with the given [id]. Safe to call if already gone. */
+    @Throws(Exception::class)
     suspend fun delete(id: String)
 }

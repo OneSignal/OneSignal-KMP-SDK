@@ -32,7 +32,13 @@ internal data class EncodableRecord(
 internal object OtlpLogEncoder {
     const val CONTENT_TYPE = "application/x-protobuf"
 
-    private const val SCOPE_NAME = "OneSignalDeviceSDK"
+    // Matches the old otel pipeline: ResourceConfig sets resource attribute
+    // service.name=OneSignalDeviceSDK, and loggerBuilder("loggerBuilder") sets the
+    // instrumentation scope name. Keeping these on the correct OTLP fields preserves
+    // backend grouping/filters keyed on service.name.
+    private const val SERVICE_NAME_KEY = "service.name"
+    private const val SERVICE_NAME = "OneSignalDeviceSDK"
+    private const val SCOPE_NAME = "loggerBuilder"
 
     // Mirrors the old otel module's LogLimits (OtelConfigShared.LogLimitsConfig): the SDK
     // capped each log record at 128 attributes and truncated attribute values to 32,000
@@ -90,8 +96,13 @@ internal object OtlpLogEncoder {
     }
 
     private fun encodeResource(attributes: Map<String, String>): ByteArray {
+        val merged =
+            buildMap {
+                put(SERVICE_NAME_KEY, SERVICE_NAME)
+                putAll(attributes)
+            }
         val writer = ProtoWriter()
-        for ((key, value) in attributes.sortedEntries()) {
+        for ((key, value) in merged.sortedEntries()) {
             writer.writeLengthDelimited(FIELD_RESOURCE_ATTRIBUTES, encodeKeyValue(key, value))
         }
         return writer.toByteArray()

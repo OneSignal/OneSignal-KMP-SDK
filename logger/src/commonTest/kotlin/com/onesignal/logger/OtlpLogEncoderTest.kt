@@ -28,14 +28,16 @@ class OtlpLogEncoderTest {
 
         // ResourceLogs.resource (1) -> Resource, attributes (1) repeated KeyValue, sorted by key.
         val resourceAttrs = resourceLogs.message(1).all(1).map { parseProto(it.bytes()) }
-        // os.name sorts before ossdk.install_id
-        assertEquals("os.name", resourceAttrs[0].string(1))
-        assertEquals("Android", resourceAttrs[0].message(2).string(1))
-        assertEquals("ossdk.install_id", resourceAttrs[1].string(1))
+        val resourceAttrMap =
+            resourceAttrs.associate { it.string(1) to it.message(2).string(1) }
+        // Wire-compat with old otel ResourceConfig: service.name on the resource.
+        assertEquals("OneSignalDeviceSDK", resourceAttrMap["service.name"])
+        assertEquals("Android", resourceAttrMap["os.name"])
+        assertEquals("abc", resourceAttrMap["ossdk.install_id"])
 
-        // ResourceLogs.scope_logs (2) -> ScopeLogs
+        // ResourceLogs.scope_logs (2) -> ScopeLogs; scope name matches loggerBuilder(...).
         val scopeLogs = resourceLogs.message(2)
-        assertEquals("OneSignalDeviceSDK", scopeLogs.message(1).string(1))
+        assertEquals("loggerBuilder", scopeLogs.message(1).string(1))
 
         // ScopeLogs.log_records (2) -> LogRecord
         val record = scopeLogs.message(2)

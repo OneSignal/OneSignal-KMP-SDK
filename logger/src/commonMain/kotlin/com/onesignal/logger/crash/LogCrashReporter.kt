@@ -12,13 +12,14 @@ import com.onesignal.logger.LogSeverity
  * forcing a flush so it survives the imminent process death.
  *
  * Mirrors `OtelCrashReporter`, but takes a platform-neutral [CrashData] instead of a
- * JVM `Thread`/`Throwable`.
+ * JVM `Thread`/`Throwable`. Synchronous so host fatal handlers can call it without
+ * bridging through an async completion.
  */
 internal class LogCrashReporter(
     private val crashTelemetry: ILogTelemetryCrash,
     private val logger: ILogger,
 ) : ILogCrashReporter {
-    override suspend fun saveCrash(crash: CrashData) {
+    override fun saveCrash(crash: CrashData) {
         logger.info("LogCrashReporter: saving crash report for ${crash.exceptionType}")
 
         val body = crash.exceptionMessage.ifBlank { crash.exceptionType }
@@ -37,8 +38,13 @@ internal class LogCrashReporter(
                 ),
             )
 
-        crashTelemetry.emit(record)
-        crashTelemetry.forceFlush()
-        logger.info("LogCrashReporter: crash report saved and flushed")
+        try {
+            crashTelemetry.emit(record)
+            crashTelemetry.forceFlush()
+            logger.info("LogCrashReporter: crash report saved and flushed")
+        } catch (e: Exception) {
+            logger.error("LogCrashReporter: failed to save crash report: ${e.message}")
+            throw e
+        }
     }
 }

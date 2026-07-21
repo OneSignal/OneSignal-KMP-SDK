@@ -12,7 +12,7 @@ class LogCrashTest {
     private fun remote(
         scope: kotlinx.coroutines.CoroutineScope,
         provider: FakePlatformProvider,
-        http: FakeHttpSender,
+        http: ILogHttpSender,
     ) = LogTelemetryRemoteImpl(
         platformProvider = provider,
         httpSender = http,
@@ -38,10 +38,15 @@ class LogCrashTest {
         )
 
         assertEquals(1, store.entries.size)
-        val json = store.entries[0].bytes.decodeToString()
-        assertTrue(json.contains("npe message"))
-        assertTrue(json.contains("java.lang.NullPointerException"))
-        assertTrue(json.contains("ossdk.exception.thread.name"))
+        val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
+        assertEquals("npe message", record.message(5).string(1))
+        val attrKeys = record.all(6).map { parseProto(it.bytes()).string(1) }
+        assertTrue("exception.type" in attrKeys)
+        assertTrue("exception.message" in attrKeys)
+        assertTrue("ossdk.exception.thread.name" in attrKeys)
+        val resourceAttrKeys =
+            parseProto(store.entries[0].bytes).message(1).message(1).all(1).map { parseProto(it.bytes()).string(1) }
+        assertTrue("service.name" in resourceAttrKeys)
     }
 
     @Test
@@ -75,6 +80,26 @@ class LogCrashTest {
 
         // Two passes (start sends, then again after the read-age delay), each stops at f1.
         assertEquals(2, http.sentRequests.size)
+        assertTrue(store.deletedIds.isEmpty())
+    }
+
+    @Test
+    fun uploaderStopsWhenExportThrowsAndKeepsReports() = runTest {
+        val provider = FakePlatformProvider(minFileAgeForReadMillis = 0)
+        val store = FakeFileStore()
+        store.seed("f1", "p1".encodeToByteArray(), ageMillis = Long.MAX_VALUE)
+        store.seed("f2", "p2".encodeToByteArray(), ageMillis = Long.MAX_VALUE)
+        val http =
+            object : ILogHttpSender {
+                override suspend fun send(request: LogHttpRequest): LogHttpResponse {
+                    throw RuntimeException("network boom")
+                }
+            }
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
         assertTrue(store.deletedIds.isEmpty())
     }
 

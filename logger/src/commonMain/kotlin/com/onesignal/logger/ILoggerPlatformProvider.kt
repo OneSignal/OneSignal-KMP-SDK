@@ -14,7 +14,10 @@ interface ILoggerPlatformProvider {
     /**
      * Installation ID for this device. Suspending because it may need to generate
      * and persist a new ID on first access.
+     *
+     * Crash-path callers may block on this; prefer returning a cached value.
      */
+    @Throws(Exception::class)
     suspend fun getInstallId(): String
 
     val sdkBase: String
