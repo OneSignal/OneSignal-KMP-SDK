@@ -1,0 +1,186 @@
+name: Release
+
+# Manual "cut a release" button. Pick a semver bump type and the workflow:
+#   1. verifies the code (spotless + JVM/Android + iOS simulator tests),
+#   2. computes the next vX.Y.Z from the latest tag (no need to remember the number),
+#   3. creates the tag + a GitHub Release, and
+#   4. optionally opens a submodule-bump PR in the Android SDK repo.
+#
+# iOS is intentionally deferred until the XCFramework packaging + publish step exists;
+# once it does, add a `bump-ios` job mirroring `bump-android`.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semver bump type (applied to the latest tag)"
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      open_android_pr:
+        description: "Open a submodule-bump PR in OneSignal-Android-SDK"
+        type: boolean
+        default: true
+
+concurrency:
+  # Never let two releases run at once.
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  # --- Gate: the exact checks CI runs, so we only ever tag green code. ---
+  verify:
+    runs-on: macos-14
+    steps:
+      - name: "[Checkout] Repo"
+        uses: actions/checkout@v4
+
+      - name: "[Setup] JDK 17"
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: "[Setup] Gradle"
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: "[Code Formatting] Spotless"
+        run: ./gradlew spotlessCheck --console=plain
+
+      - name: "[Test] Unit tests (JVM/Android + iOS simulator)"
+        run: ./gradlew :logger:testDebugUnitTest :logger:iosSimulatorArm64Test --console=plain --continue
+
+  # --- Compute version, tag, and publish the GitHub Release. ---
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha: ${{ steps.version.outputs.sha }}
+    steps:
+      - name: "[Checkout] Repo (full history + tags)"
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: "[Version] Compute next tag"
+        id: version
+        run: |
+          set -euo pipefail
+          latest="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+          if [ -z "$latest" ]; then
+            echo "No existing tags; starting from v0.0.0"
+            major=0; minor=0; patch=0
+          else
+            echo "Latest tag: $latest"
+            ver="${latest#v}"
+            IFS='.' read -r major minor patch <<< "$ver"
+          fi
+          case "${{ inputs.bump }}" in
+            major) major=$((major + 1)); minor=0; patch=0 ;;
+            minor) minor=$((minor + 1)); patch=0 ;;
+            patch) patch=$((patch + 1)) ;;
+          esac
+          version="v${major}.${minor}.${patch}"
+          sha="$(git rev-parse HEAD)"
+          echo "Next version: $version @ $sha"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: "[Version] Guard against existing tag"
+        run: |
+          set -euo pipefail
+          if git rev-parse "${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "::error::Tag ${{ steps.version.outputs.version }} already exists."
+            exit 1
+          fi
+
+      - name: "[Tag] Create and push"
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.version.outputs.version }}" -m "Release ${{ steps.version.outputs.version }}"
+          git push origin "${{ steps.version.outputs.version }}"
+
+      - name: "[Release] Create GitHub Release"
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          generate_release_notes: true
+
+  # --- Open an automated submodule-bump PR in the Android SDK repo. ---
+  bump-android:
+    needs: release
+    if: ${{ inputs.open_android_pr }}
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_REPO: OneSignal/OneSignal-Android-SDK
+      SUBMODULE_PATH: OneSignal-KMP-SDK
+      VERSION: ${{ needs.release.outputs.version }}
+      NEW_SHA: ${{ needs.release.outputs.sha }}
+    steps:
+      # A GitHub App installed on the Android repo mints a short-lived token with
+      # contents:write + pull-requests:write scoped to just that repo (the default
+      # GITHUB_TOKEN cannot write to other repositories).
+      - name: "[Auth] Mint Android-repo token"
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.KMP_RELEASE_APP_ID }}
+          private-key: ${{ secrets.KMP_RELEASE_APP_PRIVATE_KEY }}
+          owner: OneSignal
+          repositories: OneSignal-Android-SDK
+
+      - name: "[Checkout] Android SDK"
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.ANDROID_REPO }}
+          token: ${{ steps.app-token.outputs.token }}
+          fetch-depth: 0
+          # Deliberately NOT recursing submodules: we only rewrite the gitlink SHA,
+          # which does not require the submodule contents to be present.
+
+      - name: "[Bump] Re-point submodule gitlink to the new tag"
+        id: bump
+        run: |
+          set -euo pipefail
+          git config user.name "onesignal-release[bot]"
+          git config user.email "onesignal-release[bot]@users.noreply.github.com"
+
+          branch="chore/bump-kmp-${VERSION}"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+
+          git checkout -b "$branch"
+          # Update the mode-160000 gitlink entry to the commit the new tag points at.
+          git update-index --add --cacheinfo "160000,${NEW_SHA},${SUBMODULE_PATH}"
+          git commit -m "chore(logger): bump ${SUBMODULE_PATH} submodule to ${VERSION}"
+          git push origin "$branch" --force-with-lease
+
+      - name: "[PR] Open bump PR"
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          body="Automated bump of the \`${SUBMODULE_PATH}\` submodule to **${VERSION}** (\`${NEW_SHA}\`).
+
+          Release notes: https://github.com/OneSignal/OneSignal-KMP-SDK/releases/tag/${VERSION}
+
+          After merge, run \`git submodule update --init --recursive\` locally to sync."
+          # Reuse an existing PR for this branch if one is already open.
+          if gh pr view "${{ steps.bump.outputs.branch }}" --repo "$ANDROID_REPO" >/dev/null 2>&1; then
+            echo "PR already exists for branch ${{ steps.bump.outputs.branch }}; updated in place."
+          else
+            gh pr create \
+              --repo "$ANDROID_REPO" \
+              --base main \
+              --head "${{ steps.bump.outputs.branch }}" \
+              --title "chore(logger): bump shared KMP logger to ${VERSION}" \
+              --body "$body"
+          fi
