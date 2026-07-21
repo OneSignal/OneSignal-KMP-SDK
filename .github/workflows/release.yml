@@ -160,10 +160,22 @@ jobs:
           git checkout -b "$branch"
           # Update the mode-160000 gitlink entry to the commit the new tag points at.
           git update-index --add --cacheinfo "160000,${NEW_SHA},${SUBMODULE_PATH}"
+
+          # No-op guard: on the first release (and any time the pointer already matches
+          # the tagged commit) there is nothing to bump, so skip the commit/PR instead
+          # of failing on an empty commit.
+          if git diff --cached --quiet; then
+            echo "Submodule already at ${NEW_SHA}; nothing to bump — skipping PR."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "changed=true" >> "$GITHUB_OUTPUT"
           git commit -m "chore(logger): bump ${SUBMODULE_PATH} submodule to ${VERSION}"
           git push origin "$branch" --force-with-lease
 
       - name: "[PR] Open bump PR"
+        if: ${{ steps.bump.outputs.changed == 'true' }}
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
