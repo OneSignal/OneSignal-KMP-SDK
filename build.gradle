@@ -1,0 +1,44 @@
+// Root build for the standalone OneSignal KMP SDK.
+//
+// The ext values below intentionally mirror the OneSignal-Android-SDK root
+// (buildVersions, coroutinesVersion, ktlintVersion) so that logger/build.gradle
+// is a single file that resolves identically whether it is built here (this
+// repo's CI) or as a submodule subproject under the Android SDK root.
+
+buildscript {
+    ext {
+        buildVersions = [
+                compileSdkVersion: 34,
+                targetSdkVersion : 34,
+                minSdkVersion    : 21
+        ]
+        androidGradlePluginVersion = '8.8.2'
+        kotlinVersion = '1.9.25'
+        coroutinesVersion = '1.7.3'
+        spotlessVersion = '6.25.0'
+        ktlintVersion = '0.50.0'
+    }
+
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+
+    dependencies {
+        classpath "com.android.tools.build:gradle:$androidGradlePluginVersion"
+        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlinVersion"
+        classpath "com.diffplug.spotless:spotless-plugin-gradle:$spotlessVersion"
+    }
+}
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+tasks.register('clean', Delete) {
+    delete rootProject.layout.buildDirectory
+}
