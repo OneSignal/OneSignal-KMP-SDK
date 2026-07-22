@@ -64,8 +64,9 @@ internal class FakeFileStore : ILogFileStore {
     /** Age assigned to records saved via [save]; tests can tweak per scenario. */
     var savedAgeMillis: Long = Long.MAX_VALUE
 
-    override fun save(bytes: ByteArray) {
+    override fun save(bytes: ByteArray): Boolean {
         entries.add(Entry("file-${counter++}", bytes, savedAgeMillis))
+        return true
     }
 
     fun seed(id: String, bytes: ByteArray, ageMillis: Long) {

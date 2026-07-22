@@ -7,6 +7,7 @@ import com.onesignal.logger.attributes.LogFieldsPerEvent
 import com.onesignal.logger.attributes.LogFieldsTopLevel
 import com.onesignal.logger.otlp.EncodableRecord
 import com.onesignal.logger.otlp.OtlpLogEncoder
+import kotlinx.coroutines.runBlocking
 
 /**
  * Crash telemetry sink: encodes each record to OTLP/protobuf and writes it to the
@@ -16,14 +17,17 @@ import com.onesignal.logger.otlp.OtlpLogEncoder
  *
  * Records are stored fully self-contained (resource attributes baked in at capture
  * time) so the uploader can POST the stored bytes verbatim.
+ *
+ * All public methods are synchronous: the crash reporter invokes this from a fatal
+ * handler. [runBlocking] is used only to resolve the (usually cached) install id.
  */
 internal class LogTelemetryCrashImpl(
     private val fileStore: ILogFileStore,
     private val topLevelFields: LogFieldsTopLevel,
     private val perEventFields: LogFieldsPerEvent,
 ) : ILogTelemetryCrash {
-    override suspend fun emit(record: LogRecord) {
-        val resourceAttributes = topLevelFields.getAttributes()
+    override fun emit(record: LogRecord) {
+        val resourceAttributes = runBlocking { topLevelFields.getAttributes() }
         val merged = perEventFields.getAttributes() + record.attributes
         val encodable =
             EncodableRecord(
@@ -33,11 +37,13 @@ internal class LogTelemetryCrashImpl(
                 timeUnixNanos = record.timestampNanos ?: epochNanosNow(),
             )
         val bytes = OtlpLogEncoder.encode(resourceAttributes, listOf(encodable))
-        fileStore.save(bytes)
+        if (!fileStore.save(bytes)) {
+            throw IllegalStateException("ILogFileStore.save returned false")
+        }
     }
 
     // Writes are synchronous in emit(); nothing is buffered, so flush is a no-op.
-    override suspend fun forceFlush() = Unit
+    override fun forceFlush() = Unit
 
     override fun shutdown() = Unit
 }

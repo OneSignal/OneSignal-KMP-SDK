@@ -68,7 +68,7 @@ class LogTelemetryTest {
     }
 
     @Test
-    fun crashTelemetryWritesEncodedRecordToFileStore() = runTest {
+    fun crashTelemetryWritesEncodedRecordToFileStore() {
         val provider = FakePlatformProvider()
         val store = FakeFileStore()
         val telemetry =
@@ -84,5 +84,23 @@ class LogTelemetryTest {
         val resourceAttrKeys =
             parseProto(store.entries[0].bytes).message(1).message(1).all(1).map { parseProto(it.bytes()).string(1) }
         assertTrue(resourceAttrKeys.contains("ossdk.install_id"))
+        assertTrue(resourceAttrKeys.contains("service.name"))
+    }
+
+    @Test
+    fun shutdownFlushesPendingRemoteRecords() = runTest {
+        val provider = FakePlatformProvider()
+        val http = FakeHttpSender()
+        // Dedicated scope: shutdown cancels it; don't cancel the test's backgroundScope.
+        val scope =
+            kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Default,
+            )
+        val telemetry = remote(scope, provider, http)
+
+        telemetry.emit(LogRecord(LogSeverity.ERROR, "pending", emptyMap()))
+        telemetry.shutdown()
+
+        assertEquals(1, http.sentRequests.size)
     }
 }

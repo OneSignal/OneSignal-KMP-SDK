@@ -53,7 +53,13 @@ class LogCrashUploader internal constructor(
         val reports = fileStore.listReadable(platformProvider.minFileAgeForReadMillis)
         for (report in reports) {
             logger.debug("LogCrashUploader: sending crash report ${report.id}")
-            val success = remote.exportEncoded(report.bytes)
+            val success =
+                try {
+                    remote.exportEncoded(report.bytes)
+                } catch (e: Exception) {
+                    logger.error("LogCrashUploader: export threw for ${report.id}: ${e.message}")
+                    false
+                }
             logger.debug("LogCrashUploader: done crash report ${report.id}, success: $success")
             if (success) {
                 // Only delete on success so a failed upload is retried next launch.

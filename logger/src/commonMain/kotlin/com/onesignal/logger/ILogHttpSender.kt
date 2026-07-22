@@ -43,5 +43,6 @@ data class LogHttpResponse(
  * networking dependency.
  */
 interface ILogHttpSender {
+    @Throws(Exception::class)
     suspend fun send(request: LogHttpRequest): LogHttpResponse
 }

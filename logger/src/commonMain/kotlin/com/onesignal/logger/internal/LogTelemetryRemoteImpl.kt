@@ -13,6 +13,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -56,12 +57,10 @@ internal class LogTelemetryRemoteImpl(
             onExport = ::exportBatch,
         )
 
-    private suspend fun getResourceAttributes(): Map<String, String> {
-        cachedResourceAttributes?.let { return it }
-        return resourceMutex.withLock {
+    private suspend fun getResourceAttributes(): Map<String, String> =
+        resourceMutex.withLock {
             cachedResourceAttributes ?: topLevelFields.getAttributes().also { cachedResourceAttributes = it }
         }
-    }
 
     override suspend fun emit(record: LogRecord) {
         val merged = perEventFields.getAttributes() + record.attributes
@@ -98,9 +97,12 @@ internal class LogTelemetryRemoteImpl(
     override suspend fun forceFlush() = batchProcessor.flush()
 
     override fun shutdown() {
-        // Best-effort: cancels the batch loop. Any sub-second buffered remote logs may
-        // be dropped — acceptable for continuous logging (crash records do not use this
-        // path). Callers wanting a guaranteed flush should call forceFlush() first.
+        // Match the interface contract: flush pending batches before tearing down.
+        try {
+            runBlocking { batchProcessor.flush() }
+        } catch (_: Exception) {
+            // Best-effort — still cancel so resources are released.
+        }
         scope.cancel()
     }
 }
