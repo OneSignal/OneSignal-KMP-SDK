@@ -68,7 +68,7 @@ class LogTelemetryTest {
     }
 
     @Test
-    fun crashTelemetryWritesEncodedRecordToFileStore() {
+    fun crashTelemetryWritesEncodedRecordToFileStore() = runTest {
         val provider = FakePlatformProvider()
         val store = FakeFileStore()
         val telemetry =

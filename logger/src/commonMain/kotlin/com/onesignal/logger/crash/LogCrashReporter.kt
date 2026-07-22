@@ -8,22 +8,22 @@ import com.onesignal.logger.LogRecord
 import com.onesignal.logger.LogSeverity
 
 /**
- * Persists a captured crash by emitting it to the crash (disk) telemetry sink and
- * forcing a flush so it survives the imminent process death.
+ * Persists a captured crash by emitting it to the crash (disk) telemetry sink.
  *
  * Mirrors `OtelCrashReporter`, but takes a platform-neutral [CrashData] instead of a
- * JVM `Thread`/`Throwable`. Synchronous so host fatal handlers can call it without
- * bridging through an async completion.
+ * JVM `Thread`/`Throwable`. [forceFlush] is a no-op on the crash sink (disk write
+ * already completed in [ILogTelemetryCrash.emit]); it is kept so the call site
+ * matches the remote telemetry pattern.
  */
 internal class LogCrashReporter(
     private val crashTelemetry: ILogTelemetryCrash,
     private val logger: ILogger,
 ) : ILogCrashReporter {
-    override fun saveCrash(crash: CrashData) = save(crash, severity = LogSeverity.FATAL, fatal = true)
+    override suspend fun saveCrash(crash: CrashData) = save(crash, severity = LogSeverity.FATAL, fatal = true)
 
-    override fun saveNonFatal(crash: CrashData) = save(crash, severity = LogSeverity.WARN, fatal = false)
+    override suspend fun saveNonFatal(crash: CrashData) = save(crash, severity = LogSeverity.WARN, fatal = false)
 
-    private fun save(
+    private suspend fun save(
         crash: CrashData,
         severity: LogSeverity,
         fatal: Boolean,
