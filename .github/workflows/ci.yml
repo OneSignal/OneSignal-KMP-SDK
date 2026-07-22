@@ -16,7 +16,12 @@ permissions:
   contents: read
 
 jobs:
-  build-test:
+  # Verifies the shared logger module the same way the Release workflow's gate does:
+  # code formatting (Spotless) + the full unit-test suite across every target
+  # (JVM/Android + the Kotlin/Native iOS simulator). Named to match `release.yml`'s
+  # `verify` job so both surface identically in the checks UI.
+  verify:
+    name: Spotless + unit tests (JVM/Android + iOS simulator)
     # macOS runner so the Kotlin/Native iOS simulator tests can run.
     runs-on: macos-14
     steps:
