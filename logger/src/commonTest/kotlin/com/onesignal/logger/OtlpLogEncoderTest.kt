@@ -126,6 +126,57 @@ class OtlpLogEncoderTest {
     }
 
     @Test
+    fun encodesBoolAttributeAsTypedBoolValue() {
+        // A boolean attribute (e.g. ossdk.crash.fatal) must encode as OTLP AnyValue.bool_value
+        // (field 2 varint), NOT as the string "true" — matching the typed attribute the
+        // OpenTelemetry SDK produced so the backend can segment on it.
+        val bytes =
+            OtlpLogEncoder.encode(
+                resourceAttributes = emptyMap(),
+                records =
+                listOf(
+                    EncodableRecord(
+                        severity = LogSeverity.FATAL,
+                        body = "boom",
+                        attributes = mapOf("exception.type" to "E"),
+                        timeUnixNanos = 1L,
+                        boolAttributes = mapOf("ossdk.crash.fatal" to true),
+                    ),
+                ),
+            )
+        val record = parseProto(bytes).message(1).message(2).message(2)
+        val attrs = record.all(6).map { parseProto(it.bytes()) }
+        val fatal = attrs.single { it.string(1) == "ossdk.crash.fatal" }
+        // AnyValue.bool_value (2) is a varint; true -> 1, and no string_value (1) is present.
+        assertEquals(1L, fatal.message(2).first(2).varint)
+        assertTrue(fatal.message(2).all(1).isEmpty())
+    }
+
+    @Test
+    fun writesFalseBoolAttributeExplicitly() {
+        // Unlike an empty string (which is omitted), a false bool is written explicitly so it
+        // decodes to a definite false rather than an unset oneof.
+        val bytes =
+            OtlpLogEncoder.encode(
+                resourceAttributes = emptyMap(),
+                records =
+                listOf(
+                    EncodableRecord(
+                        severity = LogSeverity.WARN,
+                        body = "b",
+                        attributes = emptyMap(),
+                        timeUnixNanos = 1L,
+                        boolAttributes = mapOf("ossdk.crash.fatal" to false),
+                    ),
+                ),
+            )
+        val record = parseProto(bytes).message(1).message(2).message(2)
+        val fatal = parseProto(record.all(6).single().bytes())
+        assertEquals("ossdk.crash.fatal", fatal.string(1))
+        assertEquals(0L, fatal.message(2).first(2).varint)
+    }
+
+    @Test
     fun capsAttributeCountToLogLimit() {
         // Matches the old otel LogLimits.maxNumberOfAttributes (128).
         val manyAttrs = (0 until 200).associate { "k${it.toString().padStart(3, '0')}" to "v$it" }

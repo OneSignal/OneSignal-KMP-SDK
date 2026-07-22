@@ -12,7 +12,12 @@ interface ILogTelemetry {
     @Throws(Exception::class)
     suspend fun emit(record: LogRecord)
 
-    /** Forces all pending records to be exported/persisted immediately. */
+    /**
+     * Forces all pending records to be exported/persisted immediately.
+     *
+     * On the remote sink this drains the batch queue. On the crash sink writes
+     * already happen inside [emit], so this is a no-op — kept for a shared API.
+     */
     @Throws(Exception::class)
     suspend fun forceFlush()
 
@@ -38,18 +43,9 @@ interface ILogTelemetryRemote : ILogTelemetry {
 /**
  * Telemetry sink that persists records to local storage (crash buffering).
  *
- * Intentionally synchronous (no `suspend`): the crash reporter calls this from an
- * uncaught-exception / signal handler and must finish the disk write before the
- * process dies. On the Obj-C/Swift boundary a `suspend` API would become async and
- * risk completing after termination.
+ * Stays on the shared suspend [ILogTelemetry] contract. Durability comes from
+ * [ILogFileStore.save] being a blocking disk write inside [emit]. Hosts call the
+ * synchronous [ILogCrashReporter] entry points from fatal handlers; that reporter
+ * bridges into this sink.
  */
-interface ILogTelemetryCrash {
-    /** Encodes and durably persists [record]. */
-    @Throws(Exception::class)
-    fun emit(record: LogRecord)
-
-    /** No-op today (writes in [emit] are already synchronous); kept for symmetry. */
-    fun forceFlush()
-
-    fun shutdown()
-}
+interface ILogTelemetryCrash : ILogTelemetry

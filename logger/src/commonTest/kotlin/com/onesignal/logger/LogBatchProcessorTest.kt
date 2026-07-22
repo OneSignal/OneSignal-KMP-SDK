@@ -3,11 +3,14 @@ package com.onesignal.logger
 import com.onesignal.logger.internal.LogBatchProcessor
 import com.onesignal.logger.otlp.EncodableRecord
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class LogBatchProcessorTest {
@@ -103,5 +106,35 @@ class LogBatchProcessorTest {
         proc.enqueue(rec("b"))
         runCurrent()
         assertEquals(2, calls)
+    }
+
+    @Test
+    fun flushWaitsForInFlightExport() = runTest {
+        val exportStarted = Channel<Unit>(1)
+        val releaseExport = Channel<Unit>(1)
+        var exportCount = 0
+        val proc =
+            LogBatchProcessor<EncodableRecord>(
+                scope = backgroundScope,
+                maxQueueSize = 100,
+                maxBatchSize = 1,
+                scheduleDelayMillis = 100_000L,
+            ) {
+                exportCount++
+                exportStarted.send(Unit)
+                releaseExport.receive()
+            }
+
+        proc.enqueue(rec("a"))
+        runCurrent()
+        exportStarted.receive() // background export is in flight
+
+        val flushJob = async { proc.flush() }
+        runCurrent()
+        assertTrue(!flushJob.isCompleted) // must not finish while export holds the lock
+
+        releaseExport.send(Unit)
+        flushJob.await()
+        assertEquals(1, exportCount)
     }
 }

@@ -16,6 +16,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Remote telemetry sink: batches records and ships them as OTLP/protobuf over the
@@ -33,6 +34,9 @@ internal class LogTelemetryRemoteImpl(
         private const val MAX_QUEUE_SIZE = 100
         private const val MAX_BATCH_SIZE = 100
         private const val SCHEDULE_DELAY_MILLIS = 1_000L
+
+        /** Cap so a hung HTTP send cannot block app teardown indefinitely. */
+        private const val SHUTDOWN_FLUSH_TIMEOUT_MILLIS = 5_000L
     }
 
     private val endpoint: String by lazy {
@@ -70,6 +74,7 @@ internal class LogTelemetryRemoteImpl(
                 body = record.body,
                 attributes = merged,
                 timeUnixNanos = record.timestampNanos ?: epochNanosNow(),
+                boolAttributes = record.boolAttributes,
             ),
         )
     }
@@ -97,11 +102,14 @@ internal class LogTelemetryRemoteImpl(
     override suspend fun forceFlush() = batchProcessor.flush()
 
     override fun shutdown() {
-        // Match the interface contract: flush pending batches before tearing down.
+        // Best-effort flush before teardown. Bounded so a hung sender cannot block
+        // app disable/teardown; remaining buffered records are dropped on cancel.
         try {
-            runBlocking { batchProcessor.flush() }
+            runBlocking {
+                withTimeoutOrNull(SHUTDOWN_FLUSH_TIMEOUT_MILLIS) { batchProcessor.flush() }
+            }
         } catch (_: Exception) {
-            // Best-effort — still cancel so resources are released.
+            // Still cancel so resources are released.
         }
         scope.cancel()
     }

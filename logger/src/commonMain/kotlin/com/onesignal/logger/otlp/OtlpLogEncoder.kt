@@ -12,6 +12,10 @@ internal data class EncodableRecord(
     val body: String,
     val attributes: Map<String, String>,
     val timeUnixNanos: Long,
+    // Boolean-typed attributes, encoded as OTLP `bool_value` rather than a string. Kept
+    // separate from [attributes] so a flag like `ossdk.crash.fatal` matches the typed
+    // attribute the OpenTelemetry SDK previously produced.
+    val boolAttributes: Map<String, Boolean> = emptyMap(),
 )
 
 /**
@@ -79,6 +83,7 @@ internal object OtlpLogEncoder {
 
     // AnyValue
     private const val FIELD_ANY_STRING_VALUE = 1
+    private const val FIELD_ANY_BOOL_VALUE = 2
 
     fun encode(
         resourceAttributes: Map<String, String>,
@@ -98,8 +103,9 @@ internal object OtlpLogEncoder {
     private fun encodeResource(attributes: Map<String, String>): ByteArray {
         val merged =
             buildMap {
-                put(SERVICE_NAME_KEY, SERVICE_NAME)
                 putAll(attributes)
+                // Authoritative — must win over any caller-supplied service.name.
+                put(SERVICE_NAME_KEY, SERVICE_NAME)
             }
         val writer = ProtoWriter()
         for ((key, value) in merged.sortedEntries()) {
@@ -126,8 +132,19 @@ internal object OtlpLogEncoder {
         writer.writeVarintField(FIELD_LR_SEVERITY_NUMBER, record.severity.severityNumber.toLong())
         writer.writeString(FIELD_LR_SEVERITY_TEXT, record.severity.severityText)
         writer.writeLengthDelimited(FIELD_LR_BODY, encodeAnyValue(record.body))
-        for ((key, value) in record.attributes.sortedEntries().take(MAX_ATTRIBUTE_COUNT)) {
+        // String and bool attributes share the single 128-attribute LogLimits budget.
+        // Bool attrs first so reserved SDK flags (e.g. ossdk.crash.fatal) are not dropped
+        // when a record is near the string-attribute cap. Order within each type is by key.
+        var emitted = 0
+        for ((key, value) in record.boolAttributes.entries.sortedBy { it.key }) {
+            if (emitted >= MAX_ATTRIBUTE_COUNT) break
+            writer.writeLengthDelimited(FIELD_LR_ATTRIBUTES, encodeBoolKeyValue(key, value))
+            emitted++
+        }
+        for ((key, value) in record.attributes.sortedEntries()) {
+            if (emitted >= MAX_ATTRIBUTE_COUNT) break
             writer.writeLengthDelimited(FIELD_LR_ATTRIBUTES, encodeKeyValue(key, value.limitValueLength()))
+            emitted++
         }
         writer.writeFixed64(FIELD_LR_OBSERVED_TIME_UNIX_NANO, record.timeUnixNanos)
         return writer.toByteArray()
@@ -139,11 +156,24 @@ internal object OtlpLogEncoder {
             writeLengthDelimited(FIELD_KV_VALUE, encodeAnyValue(value))
         }.toByteArray()
 
+    private fun encodeBoolKeyValue(key: String, value: Boolean): ByteArray =
+        ProtoWriter().apply {
+            writeString(FIELD_KV_KEY, key)
+            writeLengthDelimited(FIELD_KV_VALUE, encodeBoolAnyValue(value))
+        }.toByteArray()
+
     private fun encodeAnyValue(value: String): ByteArray =
         ProtoWriter().apply {
             // proto3 omits empty scalar fields; mirror that so an empty value decodes to
             // an unset oneof exactly as the OpenTelemetry marshaler produces.
             if (value.isNotEmpty()) writeString(FIELD_ANY_STRING_VALUE, value)
+        }.toByteArray()
+
+    private fun encodeBoolAnyValue(value: Boolean): ByteArray =
+        ProtoWriter().apply {
+            // Always write bool_value (even false): the flag is an explicitly-present oneof
+            // member, so a `false` must decode to a definite false rather than an unset value.
+            writeVarintField(FIELD_ANY_BOOL_VALUE, if (value) 1L else 0L)
         }.toByteArray()
 
     // Sort for deterministic output (stable payloads, easier testing/diffing).

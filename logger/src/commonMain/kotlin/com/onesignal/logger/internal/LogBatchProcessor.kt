@@ -29,6 +29,10 @@ internal class LogBatchProcessor<T>(
     private val mutex = Mutex()
     private val buffer = ArrayList<T>()
 
+    // Serializes drain+export so flush()/shutdown wait for any in-flight export
+    // instead of seeing an empty buffer and cancelling mid-request.
+    private val exportMutex = Mutex()
+
     // CONFLATED: a flush request that arrives while one is pending is coalesced.
     private val flushSignal = Channel<Unit>(Channel.CONFLATED)
 
@@ -40,8 +44,9 @@ internal class LogBatchProcessor<T>(
                 try {
                     drainAndExport()
                 } catch (_: Exception) {
-                    // A single bad export must not kill the consumer — otherwise later
-                    // records only ship if something explicitly calls flush().
+                    // Keep the consumer alive. The failed batch was already drained —
+                    // best-effort drop (no retry), matching a failed HTTP post that
+                    // returns success=false without re-queueing.
                 }
             }
         }
@@ -61,17 +66,23 @@ internal class LogBatchProcessor<T>(
         }
     }
 
-    /** Exports everything currently buffered. */
+    /** Exports everything currently buffered, awaiting any in-flight export first. */
     suspend fun flush() = drainAndExport()
 
     private suspend fun drainAndExport() {
-        val batch =
-            mutex.withLock {
-                if (buffer.isEmpty()) return
-                val copy = buffer.toList()
-                buffer.clear()
-                copy
-            }
-        onExport(batch)
+        exportMutex.withLock {
+            val batch =
+                mutex.withLock {
+                    if (buffer.isEmpty()) {
+                        emptyList()
+                    } else {
+                        val copy = buffer.toList()
+                        buffer.clear()
+                        copy
+                    }
+                }
+            if (batch.isEmpty()) return@withLock
+            onExport(batch)
+        }
     }
 }

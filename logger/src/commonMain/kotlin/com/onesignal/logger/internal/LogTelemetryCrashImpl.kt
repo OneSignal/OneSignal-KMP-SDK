@@ -7,7 +7,6 @@ import com.onesignal.logger.attributes.LogFieldsPerEvent
 import com.onesignal.logger.attributes.LogFieldsTopLevel
 import com.onesignal.logger.otlp.EncodableRecord
 import com.onesignal.logger.otlp.OtlpLogEncoder
-import kotlinx.coroutines.runBlocking
 
 /**
  * Crash telemetry sink: encodes each record to OTLP/protobuf and writes it to the
@@ -18,16 +17,16 @@ import kotlinx.coroutines.runBlocking
  * Records are stored fully self-contained (resource attributes baked in at capture
  * time) so the uploader can POST the stored bytes verbatim.
  *
- * All public methods are synchronous: the crash reporter invokes this from a fatal
- * handler. [runBlocking] is used only to resolve the (usually cached) install id.
+ * [ILogFileStore.save] is intentionally blocking; this class stays `suspend` only
+ * because resource attributes may need [ILoggerPlatformProvider.getInstallId].
  */
 internal class LogTelemetryCrashImpl(
     private val fileStore: ILogFileStore,
     private val topLevelFields: LogFieldsTopLevel,
     private val perEventFields: LogFieldsPerEvent,
 ) : ILogTelemetryCrash {
-    override fun emit(record: LogRecord) {
-        val resourceAttributes = runBlocking { topLevelFields.getAttributes() }
+    override suspend fun emit(record: LogRecord) {
+        val resourceAttributes = topLevelFields.getAttributes()
         val merged = perEventFields.getAttributes() + record.attributes
         val encodable =
             EncodableRecord(
@@ -35,6 +34,7 @@ internal class LogTelemetryCrashImpl(
                 body = record.body,
                 attributes = merged,
                 timeUnixNanos = record.timestampNanos ?: epochNanosNow(),
+                boolAttributes = record.boolAttributes,
             )
         val bytes = OtlpLogEncoder.encode(resourceAttributes, listOf(encodable))
         if (!fileStore.save(bytes)) {
@@ -43,7 +43,7 @@ internal class LogTelemetryCrashImpl(
     }
 
     // Writes are synchronous in emit(); nothing is buffered, so flush is a no-op.
-    override fun forceFlush() = Unit
+    override suspend fun forceFlush() = Unit
 
     override fun shutdown() = Unit
 }
