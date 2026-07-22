@@ -35,6 +35,7 @@ internal class LogTelemetryCrashImpl(
                 body = record.body,
                 attributes = merged,
                 timeUnixNanos = record.timestampNanos ?: epochNanosNow(),
+                boolAttributes = record.boolAttributes,
             )
         val bytes = OtlpLogEncoder.encode(resourceAttributes, listOf(encodable))
         if (!fileStore.save(bytes)) {

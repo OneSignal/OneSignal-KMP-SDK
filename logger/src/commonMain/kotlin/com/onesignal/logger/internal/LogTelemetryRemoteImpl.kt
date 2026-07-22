@@ -70,6 +70,7 @@ internal class LogTelemetryRemoteImpl(
                 body = record.body,
                 attributes = merged,
                 timeUnixNanos = record.timestampNanos ?: epochNanosNow(),
+                boolAttributes = record.boolAttributes,
             ),
         )
     }

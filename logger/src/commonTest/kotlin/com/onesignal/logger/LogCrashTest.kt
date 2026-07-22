@@ -50,6 +50,49 @@ class LogCrashTest {
     }
 
     @Test
+    fun saveCrashEmitsFatalSeverityTaggedFatalTrue() = runTest {
+        val provider = FakePlatformProvider()
+        val store = FakeFileStore()
+        val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(provider, store)
+        val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
+
+        reporter.saveCrash(
+            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s"),
+        )
+
+        val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
+        // severity_number (2) == FATAL (21)
+        assertEquals(21L, record.first(2).varint)
+        assertEquals(1L, fatalFlag(record))
+    }
+
+    @Test
+    fun saveNonFatalEmitsWarnSeverityTaggedFatalFalse() = runTest {
+        val provider = FakePlatformProvider()
+        val store = FakeFileStore()
+        val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(provider, store)
+        val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
+
+        reporter.saveNonFatal(
+            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s"),
+        )
+
+        val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
+        // severity_number (2) == WARN (13)
+        assertEquals(13L, record.first(2).varint)
+        assertEquals(0L, fatalFlag(record))
+    }
+
+    // Reads the ossdk.crash.fatal AnyValue.bool_value (0/1) from an encoded LogRecord message.
+    private fun fatalFlag(record: ProtoMessage): Long =
+        record.all(6)
+            .map { parseProto(it.bytes()) }
+            .single { it.string(1) == "ossdk.crash.fatal" }
+            .message(2)
+            .first(2)
+            .varint
+
+    @Test
     fun uploaderSendsReadableReportsAndDeletesOnSuccess() = runTest {
         val provider = FakePlatformProvider(minFileAgeForReadMillis = 0)
         val store = FakeFileStore()
