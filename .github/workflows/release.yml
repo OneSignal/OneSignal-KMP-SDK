@@ -116,83 +116,20 @@ jobs:
           generate_release_notes: true
 
   # --- Open an automated submodule-bump PR in the Android SDK repo. ---
+  # Delegates to a reusable workflow that lives IN the Android repo, mirroring the
+  # OneSignal/sdk-shared fan-out pattern: the target repo owns the branch/commit/PR
+  # logic and authenticates with the shared org push token (GH_PUSH_TOKEN). This
+  # avoids a dedicated GitHub App — the default GITHUB_TOKEN cannot write to another
+  # repo, but GH_PUSH_TOKEN (already used across the OneSignal SDK repos) can.
+  #
+  # Requires: the OneSignal-KMP-SDK repo has access to the org `GH_PUSH_TOKEN` secret,
+  # and the reusable workflow exists on the Android repo's default branch.
   bump-android:
     needs: release
     if: ${{ inputs.open_android_pr }}
-    runs-on: ubuntu-latest
-    env:
-      ANDROID_REPO: OneSignal/OneSignal-Android-SDK
-      SUBMODULE_PATH: OneSignal-KMP-SDK
-      VERSION: ${{ needs.release.outputs.version }}
-      NEW_SHA: ${{ needs.release.outputs.sha }}
-    steps:
-      # A GitHub App installed on the Android repo mints a short-lived token with
-      # contents:write + pull-requests:write scoped to just that repo (the default
-      # GITHUB_TOKEN cannot write to other repositories).
-      - name: "[Auth] Mint Android-repo token"
-        id: app-token
-        uses: actions/create-github-app-token@v1
-        with:
-          app-id: ${{ secrets.KMP_RELEASE_APP_ID }}
-          private-key: ${{ secrets.KMP_RELEASE_APP_PRIVATE_KEY }}
-          owner: OneSignal
-          repositories: OneSignal-Android-SDK
-
-      - name: "[Checkout] Android SDK"
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.ANDROID_REPO }}
-          token: ${{ steps.app-token.outputs.token }}
-          fetch-depth: 0
-          # Deliberately NOT recursing submodules: we only rewrite the gitlink SHA,
-          # which does not require the submodule contents to be present.
-
-      - name: "[Bump] Re-point submodule gitlink to the new tag"
-        id: bump
-        run: |
-          set -euo pipefail
-          git config user.name "onesignal-release[bot]"
-          git config user.email "onesignal-release[bot]@users.noreply.github.com"
-
-          branch="chore/bump-kmp-${VERSION}"
-          echo "branch=$branch" >> "$GITHUB_OUTPUT"
-
-          git checkout -b "$branch"
-          # Update the mode-160000 gitlink entry to the commit the new tag points at.
-          git update-index --add --cacheinfo "160000,${NEW_SHA},${SUBMODULE_PATH}"
-
-          # No-op guard: on the first release (and any time the pointer already matches
-          # the tagged commit) there is nothing to bump, so skip the commit/PR instead
-          # of failing on an empty commit.
-          if git diff --cached --quiet; then
-            echo "Submodule already at ${NEW_SHA}; nothing to bump — skipping PR."
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "changed=true" >> "$GITHUB_OUTPUT"
-          git commit -m "chore(logger): bump ${SUBMODULE_PATH} submodule to ${VERSION}"
-          git push origin "$branch" --force-with-lease
-
-      - name: "[PR] Open bump PR"
-        if: ${{ steps.bump.outputs.changed == 'true' }}
-        env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: |
-          set -euo pipefail
-          body="Automated bump of the \`${SUBMODULE_PATH}\` submodule to **${VERSION}** (\`${NEW_SHA}\`).
-
-          Release notes: https://github.com/OneSignal/OneSignal-KMP-SDK/releases/tag/${VERSION}
-
-          After merge, run \`git submodule update --init --recursive\` locally to sync."
-          # Reuse an existing PR for this branch if one is already open.
-          if gh pr view "${{ steps.bump.outputs.branch }}" --repo "$ANDROID_REPO" >/dev/null 2>&1; then
-            echo "PR already exists for branch ${{ steps.bump.outputs.branch }}; updated in place."
-          else
-            gh pr create \
-              --repo "$ANDROID_REPO" \
-              --base main \
-              --head "${{ steps.bump.outputs.branch }}" \
-              --title "chore(logger): bump shared KMP logger to ${VERSION}" \
-              --body "$body"
-          fi
+    uses: OneSignal/OneSignal-Android-SDK/.github/workflows/bump-kmp-submodule.yml@main
+    secrets:
+      GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+    with:
+      kmp_version: ${{ needs.release.outputs.version }}
+      kmp_sha: ${{ needs.release.outputs.sha }}
