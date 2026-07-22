@@ -34,6 +34,7 @@ internal class LogTelemetryRemoteImpl(
         private const val MAX_QUEUE_SIZE = 100
         private const val MAX_BATCH_SIZE = 100
         private const val SCHEDULE_DELAY_MILLIS = 1_000L
+
         /** Cap so a hung HTTP send cannot block app teardown indefinitely. */
         private const val SHUTDOWN_FLUSH_TIMEOUT_MILLIS = 5_000L
     }

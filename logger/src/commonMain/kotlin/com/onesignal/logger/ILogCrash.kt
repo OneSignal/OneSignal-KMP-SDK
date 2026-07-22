@@ -4,10 +4,10 @@ package com.onesignal.logger
  * Platform-agnostic crash reporter. Persists a captured crash so it can be shipped
  * on the next launch.
  *
- * Suspend for coroutine-friendly hosts. Durability is provided by the blocking
- * [ILogFileStore.save] inside the crash telemetry sink — callers invoked from a
- * fatal handler (uncaught-exception / signal) must not return until this
- * completes (e.g. wrap in `runBlocking` on Android).
+ * Synchronous by design: host uncaught-exception / signal handlers must finish the
+ * write before the process dies. On iOS a `suspend` API would bridge to an async
+ * completion handler and could miss the write. Durability still comes from the
+ * blocking [ILogFileStore.save] inside the crash telemetry sink.
  */
 interface ILogCrashReporter {
     /**
@@ -16,7 +16,7 @@ interface ILogCrashReporter {
      * foreground ANRs.
      */
     @Throws(Exception::class)
-    suspend fun saveCrash(crash: CrashData)
+    fun saveCrash(crash: CrashData)
 
     /**
      * Records a non-fatal event on the same retained, disk-buffered crash telemetry, but at
@@ -25,7 +25,7 @@ interface ILogCrashReporter {
      * main-thread blocks and other retained warnings that are not user-visible crashes.
      */
     @Throws(Exception::class)
-    suspend fun saveNonFatal(crash: CrashData)
+    fun saveNonFatal(crash: CrashData)
 }
 
 /**

@@ -43,9 +43,9 @@ interface ILogTelemetryRemote : ILogTelemetry {
 /**
  * Telemetry sink that persists records to local storage (crash buffering).
  *
- * Durability comes from [ILogFileStore.save] being a blocking disk write inside
- * [emit] — not from making this interface non-suspend. Hosts that call from a
- * fatal handler should block until [ILogCrashReporter.saveCrash] completes
- * (e.g. `runBlocking` on Android).
+ * Stays on the shared suspend [ILogTelemetry] contract. Durability comes from
+ * [ILogFileStore.save] being a blocking disk write inside [emit]. Hosts call the
+ * synchronous [ILogCrashReporter] entry points from fatal handlers; that reporter
+ * bridges into this sink.
  */
 interface ILogTelemetryCrash : ILogTelemetry

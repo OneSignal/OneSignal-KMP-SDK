@@ -6,24 +6,26 @@ import com.onesignal.logger.ILogTelemetryCrash
 import com.onesignal.logger.ILogger
 import com.onesignal.logger.LogRecord
 import com.onesignal.logger.LogSeverity
+import kotlinx.coroutines.runBlocking
 
 /**
  * Persists a captured crash by emitting it to the crash (disk) telemetry sink.
  *
  * Mirrors `OtelCrashReporter`, but takes a platform-neutral [CrashData] instead of a
- * JVM `Thread`/`Throwable`. [forceFlush] is a no-op on the crash sink (disk write
- * already completed in [ILogTelemetryCrash.emit]); it is kept so the call site
- * matches the remote telemetry pattern.
+ * JVM `Thread`/`Throwable`. Public [saveCrash]/[saveNonFatal] are synchronous for
+ * fatal-handler call sites; [runBlocking] here bridges to the suspend telemetry sink
+ * (needed only for [ILoggerPlatformProvider.getInstallId]). [forceFlush] on the crash
+ * sink is a no-op — the disk write already completed in [ILogTelemetryCrash.emit].
  */
 internal class LogCrashReporter(
     private val crashTelemetry: ILogTelemetryCrash,
     private val logger: ILogger,
 ) : ILogCrashReporter {
-    override suspend fun saveCrash(crash: CrashData) = save(crash, severity = LogSeverity.FATAL, fatal = true)
+    override fun saveCrash(crash: CrashData) = save(crash, severity = LogSeverity.FATAL, fatal = true)
 
-    override suspend fun saveNonFatal(crash: CrashData) = save(crash, severity = LogSeverity.WARN, fatal = false)
+    override fun saveNonFatal(crash: CrashData) = save(crash, severity = LogSeverity.WARN, fatal = false)
 
-    private suspend fun save(
+    private fun save(
         crash: CrashData,
         severity: LogSeverity,
         fatal: Boolean,
@@ -53,8 +55,10 @@ internal class LogCrashReporter(
             )
 
         try {
-            crashTelemetry.emit(record)
-            crashTelemetry.forceFlush()
+            runBlocking {
+                crashTelemetry.emit(record)
+                crashTelemetry.forceFlush()
+            }
             logger.info("LogCrashReporter: $label saved and flushed")
         } catch (e: Exception) {
             logger.error("LogCrashReporter: failed to save $label: ${e.message}")
