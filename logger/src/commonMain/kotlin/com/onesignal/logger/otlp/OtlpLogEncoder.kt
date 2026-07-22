@@ -131,17 +131,18 @@ internal object OtlpLogEncoder {
         writer.writeVarintField(FIELD_LR_SEVERITY_NUMBER, record.severity.severityNumber.toLong())
         writer.writeString(FIELD_LR_SEVERITY_TEXT, record.severity.severityText)
         writer.writeLengthDelimited(FIELD_LR_BODY, encodeAnyValue(record.body))
-        // String and bool attributes share the single 128-attribute LogLimits budget, string
-        // attributes first (order within each type is by key for deterministic output).
+        // String and bool attributes share the single 128-attribute LogLimits budget.
+        // Bool attrs first so reserved SDK flags (e.g. ossdk.crash.fatal) are not dropped
+        // when a record is near the string-attribute cap. Order within each type is by key.
         var emitted = 0
-        for ((key, value) in record.attributes.sortedEntries()) {
-            if (emitted >= MAX_ATTRIBUTE_COUNT) break
-            writer.writeLengthDelimited(FIELD_LR_ATTRIBUTES, encodeKeyValue(key, value.limitValueLength()))
-            emitted++
-        }
         for ((key, value) in record.boolAttributes.entries.sortedBy { it.key }) {
             if (emitted >= MAX_ATTRIBUTE_COUNT) break
             writer.writeLengthDelimited(FIELD_LR_ATTRIBUTES, encodeBoolKeyValue(key, value))
+            emitted++
+        }
+        for ((key, value) in record.attributes.sortedEntries()) {
+            if (emitted >= MAX_ATTRIBUTE_COUNT) break
+            writer.writeLengthDelimited(FIELD_LR_ATTRIBUTES, encodeKeyValue(key, value.limitValueLength()))
             emitted++
         }
         writer.writeFixed64(FIELD_LR_OBSERVED_TIME_UNIX_NANO, record.timeUnixNanos)
