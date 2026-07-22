@@ -103,8 +103,9 @@ internal object OtlpLogEncoder {
     private fun encodeResource(attributes: Map<String, String>): ByteArray {
         val merged =
             buildMap {
-                put(SERVICE_NAME_KEY, SERVICE_NAME)
                 putAll(attributes)
+                // Authoritative — must win over any caller-supplied service.name.
+                put(SERVICE_NAME_KEY, SERVICE_NAME)
             }
         val writer = ProtoWriter()
         for ((key, value) in merged.sortedEntries()) {
