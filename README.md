@@ -9,11 +9,15 @@ the internal OneSignal Android and iOS SDK teams.
 
 ## Modules
 
-- `:logger` — platform-agnostic logging/telemetry pipeline (OTLP/protobuf encoder,
-  batch processor, crash capture + upload) with no platform, networking, or storage
-  coupling. All logic lives in `commonMain`; platform values are injected via
-  interfaces (`ILoggerPlatformProvider`, `ILogHttpSender`, `ILogFileStore`,
-  `ILogger`) that each SDK implements in its own repo.
+- `:kmp` — the single umbrella module for all shared multiplatform code, published as
+  `com.onesignal:kmp`. New shared features land as sibling packages inside this one
+  module (so iOS links a single framework) rather than as new Gradle modules. Today it
+  contains:
+  - `com.onesignal.logger` — platform-agnostic logging/telemetry pipeline
+    (OTLP/protobuf encoder, batch processor, crash capture + upload) with no platform,
+    networking, or storage coupling. All logic lives in `commonMain`; platform values
+    are injected via interfaces (`ILoggerPlatformProvider`, `ILogHttpSender`,
+    `ILogFileStore`, `ILogger`) that each SDK implements in its own repo.
 
 ## Targets
 
@@ -22,9 +26,9 @@ the internal OneSignal Android and iOS SDK teams.
 ## Build & test
 
 ```bash
-./gradlew :logger:testDebugUnitTest        # JVM/Android unit tests
-./gradlew :logger:iosSimulatorArm64Test    # iOS simulator (Kotlin/Native) tests
-./gradlew spotlessCheck                     # formatting
+./gradlew :kmp:testDebugUnitTest        # JVM/Android unit tests
+./gradlew :kmp:iosSimulatorArm64Test    # iOS simulator (Kotlin/Native) tests
+./gradlew spotlessCheck                 # formatting
 ```
 
 CI (`.github/workflows/ci.yml`) runs all of the above on every push and PR using a
@@ -32,7 +36,7 @@ macOS runner (required for the iOS simulator tests).
 
 ## How the SDKs consume this repo
 
-Each SDK adds this repo as a git submodule and includes `:logger` as a Gradle source
+Each SDK adds this repo as a git submodule and includes `:kmp` as a Gradle source
 project (no binary artifact). The module's `build.gradle` is written to resolve under
 both this repo's root and the host SDK root, so a single source file works in both
 contexts.

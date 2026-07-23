@@ -18,6 +18,9 @@ class LogFieldsTest {
         assertEquals("android", attrs["ossdk.sdk_base"])
         assertEquals("Android", attrs["os.name"])
         assertFalse(attrs.containsKey("ossdk.sdk_wrapper"))
+        // Build-stamped KMP provenance always rides along in the resource header.
+        // Value is git-describe derived (non-deterministic), so only assert presence.
+        assertTrue(attrs["ossdk.kmp_version"]?.isNotEmpty() == true)
     }
 
     @Test

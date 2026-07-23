@@ -51,7 +51,7 @@ jobs:
         run: ./gradlew spotlessCheck --console=plain
 
       - name: "[Test] Unit tests (JVM/Android + iOS simulator)"
-        run: ./gradlew :logger:testDebugUnitTest :logger:iosSimulatorArm64Test --console=plain --continue
+        run: ./gradlew :kmp:testDebugUnitTest :kmp:iosSimulatorArm64Test --console=plain --continue
 
   # --- Compute version, tag, and publish the GitHub Release. ---
   release:
