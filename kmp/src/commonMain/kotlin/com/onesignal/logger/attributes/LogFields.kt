@@ -1,6 +1,7 @@
 package com.onesignal.logger.attributes
 
 import com.onesignal.logger.ILoggerPlatformProvider
+import com.onesignal.logger.LoggerBuildInfo
 import com.onesignal.logger.internal.randomUuidString
 
 internal fun <K, V> MutableMap<K, V>.putIfValueNotNull(key: K, value: V?): MutableMap<K, V> {
@@ -15,7 +16,11 @@ internal fun <K, V> MutableMap<K, V>.putIfValueNotNull(key: K, value: V?): Mutab
  * to the `resource` rather than each record. Only values that cannot change during
  * runtime belong here (they are fetched once and cached by the telemetry).
  *
- * Mirrors `OtelFieldsTopLevel` key-for-key.
+ * Mirrors `OtelFieldsTopLevel` key-for-key, plus `ossdk.kmp_version`: the build
+ * provenance of the shared KMP module (which hosts the logger today and more
+ * features later). Because it is republished under the host SDK version, that
+ * attribute is the only thing on the wire that ties a record back to the exact
+ * KMP source that produced it.
  */
 internal class LogFieldsTopLevel(
     private val platformProvider: ILoggerPlatformProvider,
@@ -26,6 +31,7 @@ internal class LogFieldsTopLevel(
                 "ossdk.install_id" to platformProvider.getInstallId(),
                 "ossdk.sdk_base" to platformProvider.sdkBase,
                 "ossdk.sdk_base_version" to platformProvider.sdkBaseVersion,
+                "ossdk.kmp_version" to LoggerBuildInfo.KMP_VERSION,
                 "ossdk.app_package_id" to platformProvider.appPackageId,
                 "ossdk.app_version" to platformProvider.appVersion,
                 "device.manufacturer" to platformProvider.deviceManufacturer,

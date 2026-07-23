@@ -16,7 +16,7 @@ permissions:
   contents: read
 
 jobs:
-  # Verifies the shared logger module the same way the Release workflow's gate does:
+  # Verifies the shared :kmp module the same way the Release workflow's gate does:
   # code formatting (Spotless) + the full unit-test suite across every target
   # (JVM/Android + the Kotlin/Native iOS simulator). Named to match `release.yml`'s
   # `verify` job so both surface identically in the checks UI.
@@ -41,7 +41,7 @@ jobs:
         run: ./gradlew spotlessCheck --console=plain
 
       - name: "[Test] Unit tests (JVM/Android + iOS simulator)"
-        run: ./gradlew :logger:testDebugUnitTest :logger:iosSimulatorArm64Test --console=plain --continue
+        run: ./gradlew :kmp:testDebugUnitTest :kmp:iosSimulatorArm64Test --console=plain --continue
 
       - name: "[Artifacts] Test results"
         if: failure()
@@ -49,5 +49,5 @@ jobs:
         with:
           name: test-results
           path: |
-            logger/build/reports/tests
-            logger/build/test-results
+            kmp/build/reports/tests
+            kmp/build/test-results

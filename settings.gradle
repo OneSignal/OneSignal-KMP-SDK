@@ -8,4 +8,4 @@ pluginManagement {
 
 rootProject.name = 'OneSignal-KMP-SDK'
 
-include ':logger'
+include ':kmp'

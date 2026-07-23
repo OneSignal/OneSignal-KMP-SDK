@@ -5,15 +5,21 @@ alwaysApply: true
 
 # OneSignal Shared KMP Module Guidelines
 
-This repo is an internal, multi-module KMP monorepo (single source of truth) consumed by the
-Android and iOS SDKs as a git submodule pinned to a tag. It is NOT published publicly. Both SDKs
-release in lockstep for parity: tag this repo, then bump the submodule pointer in both SDK repos.
+This repo is an internal KMP repo (single source of truth) consumed by the Android and iOS SDKs
+as a git submodule pinned to a tag. It is NOT published publicly (well — the Android host does
+republish it to Maven Central as `com.onesignal:kmp` so `:core`'s POM resolves, but it is not a
+standalone public product). Both SDKs release in lockstep for parity: tag this repo, then bump
+the submodule pointer in both SDK repos.
 
 ## Module structure
-- New modules are siblings of `logger/` at the repo root, each a Gradle subproject added to `settings.gradle` (`include ':logger', ':analytics'`).
+- ONE umbrella module, `:kmp` (directory `kmp/`), published as `com.onesignal:kmp`. New shared
+  features are added as sibling PACKAGES inside this module (e.g. `com.onesignal.logger`,
+  `com.onesignal.common`, `com.onesignal.notifications`), NOT as new Gradle subprojects. Keeping
+  it a single module means iOS links exactly one framework and the host wires up one artifact.
 - All logic lives in `commonMain`/`commonTest`. Targets: `androidTarget`, `iosX64`, `iosArm64`, `iosSimulatorArm64`.
-- Each module `build.gradle` must resolve under BOTH this repo's root and a host SDK root: read shared versions from the root (`rootProject.buildVersions`, `$coroutinesVersion`) and `apply from: '../spotless.gradle'`. Do not hardcode versions per module.
-- Cross-module deps are plain project deps: `implementation project(':logger')`.
+- The `kmp/build.gradle` must resolve under BOTH this repo's root and a host SDK root: read shared versions from the root (`rootProject.buildVersions`, `$coroutinesVersion`) and `apply from: '../spotless.gradle'`. Do not hardcode versions.
+- Prefer package-level separation over new modules. Only introduce a second Gradle module if a
+  feature genuinely needs different dependencies/targets; the default is a new package in `:kmp`.
 
 ## Public API = the interop contract (ports & adapters)
 - Expose a SMALL public surface: interfaces + a factory + plain data classes. Mark everything else `internal` (internal never appears in the generated Obj-C header).
@@ -32,5 +38,5 @@ Android consumes Kotlin directly and is never the constraint. Design the public 
 
 ## Testing & build
 - Put logic tests in `commonTest` so they run on every target; keep the module dependency-light (no serialization/networking libs in common).
-- Verify before pushing: `./gradlew :<module>:testDebugUnitTest :<module>:iosSimulatorArm64Test spotlessCheck`.
+- Verify before pushing: `./gradlew :kmp:testDebugUnitTest :kmp:iosSimulatorArm64Test spotlessCheck`.
 - CI runs on a macOS runner (required for the iOS simulator tests).

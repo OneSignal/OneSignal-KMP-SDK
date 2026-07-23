@@ -1,0 +1,299 @@
+plugins {
+    id 'org.jetbrains.kotlin.multiplatform'
+    id 'com.android.library'
+    id 'com.diffplug.spotless'
+}
+
+// Kotlin Multiplatform ":kmp" module — OneSignal's shared multiplatform code.
+//
+// One umbrella module (published as `com.onesignal:kmp`) that hosts all shared,
+// platform-agnostic Kotlin. Today it contains the logger (package
+// `com.onesignal.logger`); future shared features (e.g. `common`, `notifications`)
+// land as sibling packages inside this same module rather than new Gradle modules,
+// so the iOS side only ever links a single framework.
+//
+// The logger is the platform-agnostic, OpenTelemetry-free replacement for the
+// `otel` module. ALL logic lives in `commonMain` (pure Kotlin, no Android or
+// JVM-only OpenTelemetry types) so the exact same pipeline can be shared with the
+// iOS SDK.
+//
+// The module deliberately follows the same decoupled shape as `otel`:
+//   - platform values are injected via ILoggerPlatformProvider
+//   - logging is injected via ILogger
+//   - HTTP and file IO are injected via ILogHttpSender / ILogFileStore
+//   - everything is composed through LoggerFactory
+// This keeps the module honest about its dependencies (i.e. "not so easy to use")
+// while making the eventual core swap from `otel` -> `logger` near-mechanical.
+
+// Single, explicit signal for "a host build wants the shared KMP modules
+// published to Maven Central" (only the Android SDK sets this, in its
+// gradle.properties). Defined up here because it governs BOTH whether iOS
+// targets are registered and whether Maven publishing is wired up — see the
+// publishing block below for the full rationale on why this is a purpose-built
+// flag rather than a host-specific value like Android's SDK_VERSION.
+def publishSharedKmp = rootProject.hasProperty('onesignalPublishSharedKmp') &&
+        rootProject.property('onesignalPublishSharedKmp').toString().toBoolean()
+
+// --- Build-time provenance stamping -----------------------------------------
+//
+// The module is republished under the *host SDK's* version (e.g.
+// com.onesignal:kmp:5.9.8), so the shipped artifact by itself carries no
+// hint of which KMP source produced it. We close that gap by generating a
+// `LoggerBuildInfo.KMP_VERSION` constant from `git describe` against this
+// module's checkout and compiling it into commonMain (and therefore into every
+// published variant). Given any shipped artifact you can then read exactly which
+// KMP tag/commit it was built from, independent of the SDK version.
+def generateLoggerBuildInfo = tasks.register('generateLoggerBuildInfo') {
+    def outputDir = layout.buildDirectory.dir('generated/loggerBuildInfo/kotlin')
+    // Repo root (parent of kmp/) so git describe runs against the KMP checkout,
+    // whether this module is built standalone or as an Android SDK submodule.
+    def kmpRepoDir = projectDir.parentFile
+    outputs.dir(outputDir)
+    // Always re-run so the stamped value reflects the current checkout. This is
+    // cheap; downstream Kotlin compilation stays up to date if the value is
+    // unchanged.
+    outputs.upToDateWhen { false }
+    doLast {
+        def version = 'unknown'
+        try {
+            // actions/checkout with submodules:recursive uses fetch-depth:1 and does
+            // NOT fetch tag refs into the submodule ([actions/checkout#435](https://github.com/actions/checkout/issues/435)).
+            // Without tags, `git describe --tags` falls back to a bare SHA and the
+            // publish-time provenance gate fails. Best-effort fetch so CI and local
+            // submodule checkouts can resolve vX.Y.Z when the network/remote allow it.
+            def fetch = new ProcessBuilder('git', 'fetch', '--tags', '--force')
+                    .directory(kmpRepoDir)
+                    .redirectErrorStream(true)
+                    .start()
+            fetch.waitFor()
+
+            def proc = new ProcessBuilder('git', 'describe', '--tags', '--always', '--dirty')
+                    .directory(kmpRepoDir)
+                    .redirectErrorStream(true)
+                    .start()
+            proc.waitFor()
+            if (proc.exitValue() == 0) {
+                def out = proc.inputStream.text.trim()
+                if (!out.isEmpty()) {
+                    version = out
+                }
+            }
+        } catch (Exception ignored) {
+            // git unavailable / not a git checkout (e.g. source tarball) -> 'unknown'
+        }
+        project.ext.loggerKmpVersion = version
+        // Escape so a weird tag name cannot break the generated Kotlin source.
+        def escaped = version
+                .replace('\\', '\\\\')
+                .replace('"', '\\"')
+                .replace('$', '\\$')
+        def pkgDir = new File(outputDir.get().asFile, 'com/onesignal/logger')
+        pkgDir.mkdirs()
+        new File(pkgDir, 'LoggerBuildInfo.kt').text = """\
+// Generated at build time from the OneSignal-KMP-SDK git checkout. Do not edit.
+package com.onesignal.logger
+
+/**
+ * Build-time provenance for the shared KMP module.
+ *
+ * [KMP_VERSION] is `git describe --tags --always --dirty` for the
+ * OneSignal-KMP-SDK checkout that produced this artifact, so a shipped
+ * `com.onesignal:kmp` can be traced back to the exact source it was built
+ * from — independent of the host SDK version it is republished under.
+ */
+object LoggerBuildInfo {
+    const val KMP_VERSION: String = "${escaped}"
+}
+"""
+    }
+}
+
+kotlin {
+    androidTarget {
+        // Only the `release` variant is published as com.onesignal:kmp (it is what
+        // :core resolves). Declaring it here also satisfies AGP's requirement to pick
+        // library variants when Maven publishing is wired up in a host SDK build.
+        publishLibraryVariants('release')
+        compilations.all {
+            kotlinOptions {
+                jvmTarget = '1.8'
+            }
+        }
+    }
+
+    // iOS targets are registered for every build EXCEPT an Android-only Maven
+    // publish: registering them there would make vanniktech upload public
+    // `kmp-ios*` klibs, and Android consumers only need `kmp` +
+    // `kmp-android`. The standalone KMP CI and a future iOS host (neither of
+    // which sets the publish flag) still get the iOS targets they need.
+    if (!publishSharedKmp) {
+        iosX64()
+        iosArm64()
+        iosSimulatorArm64()
+    }
+
+    sourceSets {
+        commonMain {
+            // Adding the task provider as a source dir also wires the compile
+            // dependency, so LoggerBuildInfo.kt is generated before compilation.
+            kotlin.srcDir(generateLoggerBuildInfo)
+            dependencies {
+                implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion"
+            }
+        }
+        commonTest {
+            dependencies {
+                implementation kotlin('test')
+                implementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutinesVersion"
+            }
+        }
+    }
+}
+
+android {
+    namespace 'com.onesignal.logger'
+    compileSdkVersion rootProject.buildVersions.compileSdkVersion
+
+    defaultConfig {
+        // Matches the `otel` module. Runtime callers gate usage on SDK level the
+        // same way `otel` does, so consuming modules (min 21) override the merge.
+        minSdkVersion 26
+    }
+
+    // Must mirror the build types declared by consuming modules (e.g. :core) so
+    // Gradle variant matching can resolve this module for every variant.
+    buildTypes {
+        original {
+            minifyEnabled false
+        }
+        release {
+            minifyEnabled false
+        }
+        unity {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+}
+
+ext {
+    projectName = "OneSignal SDK KMP"
+    projectDescription = "OneSignal SDK - Multiplatform module"
+}
+
+// --- Maven publishing (opt-in, host-driven) ---------------------------------
+//
+// :core declares a runtime dependency on this module, so its published POM
+// references `com.onesignal:kmp:<version>`. That coordinate must actually
+// exist on Maven Central or every SDK consumer's dependency resolution breaks.
+// We publish this module the same way :otel is published, but ONLY when a host
+// build explicitly opts in via `-PonesignalPublishSharedKmp=true` (the Android
+// SDK sets this in its gradle.properties).
+//
+// Keying on a purpose-built flag — rather than a host-specific value like
+// Android's SDK_VERSION — is deliberate: iOS and any future host consume this
+// shared module too and set different things (iOS ships an XCFramework and never
+// publishes to Maven at all). An explicit opt-in means every host controls
+// publishing the same documented way, the standalone KMP repo build (which sets
+// nothing) never publishes, and adding more shared modules later reuses the same
+// switch. The opting-in host is responsible for putting the
+// com.vanniktech.maven.publish plugin on the classpath and setting group/version.
+//
+// NOTE: vanniktech types are referenced by fully-qualified name (no top-level
+// `import`) on purpose — an import would fail to compile the script in the KMP
+// repo, where the plugin is absent from the classpath.
+//
+// `publishSharedKmp` is defined near the top of this file (it also gates iOS
+// target registration above).
+if (publishSharedKmp) {
+    pluginManager.apply('com.vanniktech.maven.publish')
+
+    // Refuse to publish an artifact whose provenance is not a KMP version tag
+    // (or a clean describe rooted at one). Escape hatch for local experiments:
+    // -PALLOW_UNTAGGED_LOGGER_KMP=true
+    def verifyLoggerKmpProvenance = tasks.register('verifyLoggerKmpProvenance') {
+        dependsOn generateLoggerBuildInfo
+        doLast {
+            if (rootProject.hasProperty('ALLOW_UNTAGGED_LOGGER_KMP')) {
+                logger.warn("ALLOW_UNTAGGED_LOGGER_KMP set — skipping KMP provenance check (stamped=${project.ext.loggerKmpVersion})")
+                return
+            }
+            def version = project.ext.has('loggerKmpVersion') ? project.ext.loggerKmpVersion.toString() : 'unknown'
+            if (version == 'unknown' || version.endsWith('-dirty')) {
+                throw new GradleException(
+                        "Refusing to publish com.onesignal:kmp with unusable KMP provenance '${version}'. " +
+                                "Pin the OneSignal-KMP-SDK submodule to a clean tagged commit (vX.Y.Z). " +
+                                "For local experiments only: -PALLOW_UNTAGGED_LOGGER_KMP=true")
+            }
+            // git describe --tags yields `v1.2.3` or `v1.2.3-N-gSHA` when a tag exists.
+            if (!(version ==~ /^v\d+\.\d+.*/)) {
+                throw new GradleException(
+                        "Refusing to publish com.onesignal:kmp without a KMP version tag " +
+                                "(got '${version}'). Tag OneSignal-KMP-SDK (vX.Y.Z) and pin the submodule to it. " +
+                                "For local experiments only: -PALLOW_UNTAGGED_LOGGER_KMP=true")
+            }
+        }
+    }
+
+    mavenPublishing {
+        // Android-only for now: iOS targets are not registered when
+        // onesignalPublishSharedKmp is set (see kotlin {} above), so vanniktech
+        // publishes the root metadata module + `kmp-android` release variant —
+        // not public `kmp-ios*` klibs. Android/Gradle consumers of :core resolve
+        // `com.onesignal:kmp` and pick the android variant via module metadata.
+        publishToMavenCentral(com.vanniktech.maven.publish.SonatypeHost.CENTRAL_PORTAL)
+
+        // Mirror :otel/:core: only sign when signing credentials are present, so
+        // publishToMavenLocal (and the standalone build) work unsigned while the
+        // Maven Central release still signs everything.
+        afterEvaluate {
+            def hasSigningConfig = project.hasProperty('signing.keyId') ||
+                    project.hasProperty('signing.secretKeyRingFile') ||
+                    (project.extensions.findByName('signing') != null)
+            if (hasSigningConfig) {
+                signAllPublications()
+            }
+
+            // Every publish path (local, Central, release) must carry tagged provenance.
+            tasks.matching { it.name.toLowerCase().startsWith('publish') }.configureEach {
+                dependsOn(verifyLoggerKmpProvenance)
+            }
+        }
+
+        // artifactId is pinned to `kmp` so the coordinate matches the dependency
+        // :core emits into its POM (project.group=com.onesignal, version=SDK_VERSION).
+        coordinates(project.group.toString(), 'kmp', project.version.toString())
+
+        pom {
+            name = 'OneSignal SDK KMP'
+            description = 'OneSignal SDK - Multiplatform module'
+            inceptionYear = '2025'
+            url = 'https://github.com/onesignal/onesignal-android-sdk/'
+            licenses {
+                license {
+                    name = 'Modified MIT License'
+                    url = 'https://raw.githubusercontent.com/onesignal/onesignal-android-sdk/main/LICENSE'
+                    distribution = 'repo'
+                }
+            }
+            developers {
+                developer {
+                    id = 'OneSignal'
+                    name = 'OneSignal'
+                    url = 'https://github.com/OneSignal/'
+                }
+            }
+            scm {
+                url = 'https://github.com/onesignal/onesignal-android-sdk'
+                connection = 'scm:git:git://github.com/onesignal/onesignal-android-sdk.git'
+                developerConnection = 'scm:git:ssh://git@github.com/onesignal/onesignal-android-sdk.git'
+            }
+        }
+    }
+}
+
+apply from: '../spotless.gradle'
