@@ -5,6 +5,7 @@ import com.onesignal.logger.ILogTelemetryRemote
 import com.onesignal.logger.ILogger
 import com.onesignal.logger.ILoggerPlatformProvider
 import kotlinx.coroutines.delay
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Reads locally-buffered crash reports and ships them to OneSignal on the next app
@@ -30,10 +31,22 @@ class LogCrashUploader internal constructor(
         val remoteLogLevel = platformProvider.remoteLogLevel
         if (remoteLogLevel == null || remoteLogLevel == "NONE") {
             logger.info("LogCrashUploader: remote logging disabled (level: $remoteLogLevel)")
+            // Still drop legacy OTEL files so a later module flip is not poisoned.
+            purgeUnrecognizedEntries()
             return
         }
         logger.info("LogCrashUploader: starting")
-        internalStart()
+        logger.debug(
+            "LogCrashUploader: path=${platformProvider.crashStoragePath} " +
+                "minFileAgeMs=${platformProvider.minFileAgeForReadMillis} level=$remoteLogLevel",
+        )
+        // Purge must run even if listReadable/export throws — a messy crash dir is
+        // exactly when leftover legacy files most need reclaiming.
+        try {
+            internalStart()
+        } finally {
+            purgeUnrecognizedEntries()
+        }
     }
 
     /**
@@ -49,25 +62,64 @@ class LogCrashUploader internal constructor(
         sendReports()
     }
 
+    /**
+     * After owned `*.otlp` uploads finish (or when remote logging is off), remove
+     * leftover files this store does not own — typically bare-millis OTEL
+     * disk-buffering files from when both modules shared one crash directory.
+     */
+    private suspend fun purgeUnrecognizedEntries() {
+        val minAgeMillis = platformProvider.minFileAgeForReadMillis
+        val deleted =
+            try {
+                fileStore.deleteUnrecognizedEntries(minAgeMillis)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                logger.error("LogCrashUploader: failed to purge unrecognized files: ${e.message}")
+                return
+            }
+        if (deleted > 0) {
+            logger.info("LogCrashUploader: purged $deleted unrecognized/legacy crash file(s)")
+        } else {
+            logger.debug("LogCrashUploader: no unrecognized/legacy crash files to purge")
+        }
+    }
+
     private suspend fun sendReports() {
         val reports = fileStore.listReadable(platformProvider.minFileAgeForReadMillis)
+        val inventory =
+            reports.joinToString(separator = "; ") { report ->
+                "id=${report.id} bytes=${report.bytes.size}"
+            }
+        logger.debug(
+            "LogCrashUploader: readable reports count=${reports.size}" +
+                if (reports.isEmpty()) "" else " [$inventory]",
+        )
+        var sent = 0
         for (report in reports) {
-            logger.debug("LogCrashUploader: sending crash report ${report.id}")
+            logger.debug(
+                "LogCrashUploader: posting id=${report.id} bytes=${report.bytes.size} " +
+                    "(OTLP/protobuf payload)",
+            )
             val success =
                 try {
                     remote.exportEncoded(report.bytes)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     logger.error("LogCrashUploader: export threw for ${report.id}: ${e.message}")
                     false
                 }
-            logger.debug("LogCrashUploader: done crash report ${report.id}, success: $success")
+            logger.debug("LogCrashUploader: done id=${report.id} success=$success")
             if (success) {
                 // Only delete on success so a failed upload is retried next launch.
                 fileStore.delete(report.id)
+                sent++
             } else {
                 // Stop on first failure to avoid hammering a failing network.
                 break
             }
         }
+        logger.debug("LogCrashUploader: pass complete sent=$sent of ${reports.size}")
     }
 }

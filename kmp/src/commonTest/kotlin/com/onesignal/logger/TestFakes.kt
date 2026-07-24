@@ -59,10 +59,22 @@ internal class FakeFileStore : ILogFileStore {
 
     val entries = mutableListOf<Entry>()
     val deletedIds = mutableListOf<String>()
+
+    data class UnrecognizedEntry(val id: String, val ageMillis: Long)
+
+    /** Legacy/foreign entries that [deleteUnrecognizedEntries] may remove. */
+    val unrecognizedEntries = mutableListOf<UnrecognizedEntry>()
+    val purgedUnrecognizedIds = mutableListOf<String>()
     private var counter = 0
 
     /** Age assigned to records saved via [save]; tests can tweak per scenario. */
     var savedAgeMillis: Long = Long.MAX_VALUE
+
+    /** When set, [listReadable] throws instead of returning entries. */
+    var listReadableException: Exception? = null
+
+    /** When set, [deleteUnrecognizedEntries] throws instead of purging. */
+    var deleteUnrecognizedException: Exception? = null
 
     override fun save(bytes: ByteArray): Boolean {
         entries.add(Entry("file-${counter++}", bytes, savedAgeMillis))
@@ -73,14 +85,28 @@ internal class FakeFileStore : ILogFileStore {
         entries.add(Entry(id, bytes, ageMillis))
     }
 
-    override suspend fun listReadable(minAgeMillis: Long): List<StoredLogFile> =
-        entries
+    fun seedUnrecognized(id: String, ageMillis: Long = Long.MAX_VALUE) {
+        unrecognizedEntries.add(UnrecognizedEntry(id, ageMillis))
+    }
+
+    override suspend fun listReadable(minAgeMillis: Long): List<StoredLogFile> {
+        listReadableException?.let { throw it }
+        return entries
             .filter { it.ageMillis >= minAgeMillis && it.id !in deletedIds }
             .map { StoredLogFile(it.id, it.bytes) }
+    }
 
     override suspend fun delete(id: String) {
         deletedIds.add(id)
         entries.removeAll { it.id == id }
+    }
+
+    override suspend fun deleteUnrecognizedEntries(minAgeMillis: Long): Int {
+        deleteUnrecognizedException?.let { throw it }
+        val toPurge = unrecognizedEntries.filter { it.ageMillis >= minAgeMillis }
+        purgedUnrecognizedIds.addAll(toPurge.map { it.id })
+        unrecognizedEntries.removeAll(toPurge.toSet())
+        return toPurge.size
     }
 }
 

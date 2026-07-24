@@ -60,4 +60,24 @@ interface ILogFileStore {
     /** Deletes the entry with the given [id]. Safe to call if already gone. */
     @Throws(Exception::class)
     suspend fun delete(id: String)
+
+    /**
+     * Deletes on-disk entries this store does not own (e.g. legacy OpenTelemetry
+     * bare-millis files left in a shared crash directory) whose age is at least
+     * [minAgeMillis].
+     *
+     * Owned records — including failed uploads and files still under the age gate —
+     * must always be preserved. Foreign/unrecognized files younger than
+     * [minAgeMillis] must also be preserved so an in-flight legacy write during a
+     * module-flag transition is not deleted mid-write. Callers typically pass
+     * [ILoggerPlatformProvider.minFileAgeForReadMillis] for the same safety margin
+     * used by [listReadable].
+     *
+     * Default is a no-op for test doubles / platforms with no shared-directory legacy.
+     *
+     * @param minAgeMillis minimum age before a foreign file may be deleted
+     * @return number of unrecognized entries deleted
+     */
+    @Throws(Exception::class)
+    suspend fun deleteUnrecognizedEntries(minAgeMillis: Long): Int = 0
 }

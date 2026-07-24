@@ -4,8 +4,10 @@ import com.onesignal.logger.attributes.LogFieldsPerEvent
 import com.onesignal.logger.attributes.LogFieldsTopLevel
 import com.onesignal.logger.internal.LogTelemetryRemoteImpl
 import kotlinx.coroutines.test.runTest
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class LogCrashTest {
@@ -158,5 +160,107 @@ class LogCrashTest {
         uploader.start()
 
         assertEquals(0, http.sentRequests.size)
+    }
+
+    @Test
+    fun uploaderPurgesUnrecognizedFilesAfterSuccessfulUploads() = runTest {
+        val provider = FakePlatformProvider(minFileAgeForReadMillis = 0)
+        val store = FakeFileStore()
+        store.seed("owned.otlp", "payload".encodeToByteArray(), ageMillis = Long.MAX_VALUE)
+        store.seedUnrecognized("1784621689841")
+        store.seedUnrecognized("stale.tmp")
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
+        assertEquals(1, http.sentRequests.size)
+        assertTrue("owned.otlp" in store.deletedIds)
+        assertEquals(listOf("1784621689841", "stale.tmp"), store.purgedUnrecognizedIds)
+        assertTrue(store.unrecognizedEntries.isEmpty())
+    }
+
+    @Test
+    fun uploaderPurgesUnrecognizedFilesEvenWhenRemoteLoggingDisabled() = runTest {
+        val provider = FakePlatformProvider(remoteLogLevel = "NONE")
+        val store = FakeFileStore()
+        store.seed("owned.otlp", "p".encodeToByteArray(), ageMillis = Long.MAX_VALUE)
+        store.seedUnrecognized("legacy-otel-file")
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
+        assertEquals(0, http.sentRequests.size)
+        assertTrue(store.deletedIds.isEmpty())
+        assertEquals(listOf("legacy-otel-file"), store.purgedUnrecognizedIds)
+    }
+
+    @Test
+    fun uploaderKeepsOwnedReportsWhenUploadFailsButStillPurgesUnrecognized() = runTest {
+        val provider = FakePlatformProvider(minFileAgeForReadMillis = 0)
+        val store = FakeFileStore()
+        store.seed("owned.otlp", "p".encodeToByteArray(), ageMillis = Long.MAX_VALUE)
+        store.seedUnrecognized("legacy-otel-file")
+        val http = FakeHttpSender(defaultResponse = LogHttpResponse(success = false, statusCode = 500))
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
+        assertTrue(store.deletedIds.isEmpty())
+        assertEquals(listOf("legacy-otel-file"), store.purgedUnrecognizedIds)
+    }
+
+    @Test
+    fun uploaderPurgesUnrecognizedFilesEvenWhenListReadableThrows() = runTest {
+        val provider = FakePlatformProvider(minFileAgeForReadMillis = 0)
+        val store = FakeFileStore()
+        store.listReadableException = IllegalStateException("corrupt crash dir")
+        store.seedUnrecognized("legacy-otel-file")
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        try {
+            uploader.start()
+            // start() may rethrow from internalStart; purge must still have run.
+        } catch (_: IllegalStateException) {
+            // expected
+        }
+
+        assertEquals(0, http.sentRequests.size)
+        assertEquals(listOf("legacy-otel-file"), store.purgedUnrecognizedIds)
+    }
+
+    @Test
+    fun uploaderPurgesOnlyStaleUnrecognizedFilesRespectingAgeGate() = runTest {
+        val provider = FakePlatformProvider(minFileAgeForReadMillis = 5_000)
+        val store = FakeFileStore()
+        store.seedUnrecognized("too-young-legacy", ageMillis = 100)
+        store.seedUnrecognized("stale-legacy", ageMillis = 10_000)
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
+        assertEquals(listOf("stale-legacy"), store.purgedUnrecognizedIds)
+        assertEquals(listOf("too-young-legacy"), store.unrecognizedEntries.map { it.id })
+    }
+
+    @Test
+    fun uploaderRethrowsCancellationFromPurgeWhenRemoteLoggingDisabled() = runTest {
+        val provider = FakePlatformProvider(remoteLogLevel = "NONE")
+        val store = FakeFileStore()
+        store.deleteUnrecognizedException = CancellationException("cancelled")
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        assertFailsWith<CancellationException> { uploader.start() }
+        assertTrue(store.purgedUnrecognizedIds.isEmpty())
     }
 }
