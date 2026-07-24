@@ -159,4 +159,56 @@ class LogCrashTest {
 
         assertEquals(0, http.sentRequests.size)
     }
+
+    @Test
+    fun uploaderPurgesUnrecognizedFilesAfterSuccessfulUploads() = runTest {
+        val provider = FakePlatformProvider(minFileAgeForReadMillis = 0)
+        val store = FakeFileStore()
+        store.seed("owned.otlp", "payload".encodeToByteArray(), ageMillis = Long.MAX_VALUE)
+        store.seedUnrecognized("1784621689841")
+        store.seedUnrecognized("stale.tmp")
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
+        assertEquals(1, http.sentRequests.size)
+        assertTrue("owned.otlp" in store.deletedIds)
+        assertEquals(listOf("1784621689841", "stale.tmp"), store.purgedUnrecognizedIds)
+        assertTrue(store.unrecognizedIds.isEmpty())
+    }
+
+    @Test
+    fun uploaderPurgesUnrecognizedFilesEvenWhenRemoteLoggingDisabled() = runTest {
+        val provider = FakePlatformProvider(remoteLogLevel = "NONE")
+        val store = FakeFileStore()
+        store.seed("owned.otlp", "p".encodeToByteArray(), ageMillis = Long.MAX_VALUE)
+        store.seedUnrecognized("legacy-otel-file")
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
+        assertEquals(0, http.sentRequests.size)
+        assertTrue(store.deletedIds.isEmpty())
+        assertEquals(listOf("legacy-otel-file"), store.purgedUnrecognizedIds)
+    }
+
+    @Test
+    fun uploaderKeepsOwnedReportsWhenUploadFailsButStillPurgesUnrecognized() = runTest {
+        val provider = FakePlatformProvider(minFileAgeForReadMillis = 0)
+        val store = FakeFileStore()
+        store.seed("owned.otlp", "p".encodeToByteArray(), ageMillis = Long.MAX_VALUE)
+        store.seedUnrecognized("legacy-otel-file")
+        val http = FakeHttpSender(defaultResponse = LogHttpResponse(success = false, statusCode = 500))
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
+        assertTrue(store.deletedIds.isEmpty())
+        assertEquals(listOf("legacy-otel-file"), store.purgedUnrecognizedIds)
+    }
 }

@@ -59,6 +59,10 @@ internal class FakeFileStore : ILogFileStore {
 
     val entries = mutableListOf<Entry>()
     val deletedIds = mutableListOf<String>()
+
+    /** Legacy/foreign ids that [deleteUnrecognizedEntries] should remove. */
+    val unrecognizedIds = mutableListOf<String>()
+    val purgedUnrecognizedIds = mutableListOf<String>()
     private var counter = 0
 
     /** Age assigned to records saved via [save]; tests can tweak per scenario. */
@@ -73,6 +77,10 @@ internal class FakeFileStore : ILogFileStore {
         entries.add(Entry(id, bytes, ageMillis))
     }
 
+    fun seedUnrecognized(id: String) {
+        unrecognizedIds.add(id)
+    }
+
     override suspend fun listReadable(minAgeMillis: Long): List<StoredLogFile> =
         entries
             .filter { it.ageMillis >= minAgeMillis && it.id !in deletedIds }
@@ -81,6 +89,13 @@ internal class FakeFileStore : ILogFileStore {
     override suspend fun delete(id: String) {
         deletedIds.add(id)
         entries.removeAll { it.id == id }
+    }
+
+    override suspend fun deleteUnrecognizedEntries(): Int {
+        purgedUnrecognizedIds.addAll(unrecognizedIds)
+        val count = unrecognizedIds.size
+        unrecognizedIds.clear()
+        return count
     }
 }
 

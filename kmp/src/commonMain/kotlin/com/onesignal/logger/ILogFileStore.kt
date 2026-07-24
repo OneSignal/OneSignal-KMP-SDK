@@ -60,4 +60,17 @@ interface ILogFileStore {
     /** Deletes the entry with the given [id]. Safe to call if already gone. */
     @Throws(Exception::class)
     suspend fun delete(id: String)
+
+    /**
+     * Deletes on-disk entries this store does not own (e.g. legacy OpenTelemetry
+     * bare-millis files left in a shared crash directory).
+     *
+     * Owned records — including failed uploads and files still under the age gate —
+     * must be preserved. Default is a no-op for test doubles / platforms with no
+     * shared-directory legacy.
+     *
+     * @return number of unrecognized entries deleted
+     */
+    @Throws(Exception::class)
+    suspend fun deleteUnrecognizedEntries(): Int = 0
 }
