@@ -3,9 +3,11 @@ package com.onesignal.logger
 import com.onesignal.logger.attributes.LogFieldsPerEvent
 import com.onesignal.logger.attributes.LogFieldsTopLevel
 import com.onesignal.logger.internal.LogTelemetryRemoteImpl
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class LogCrashTest {
@@ -176,7 +178,7 @@ class LogCrashTest {
         assertEquals(1, http.sentRequests.size)
         assertTrue("owned.otlp" in store.deletedIds)
         assertEquals(listOf("1784621689841", "stale.tmp"), store.purgedUnrecognizedIds)
-        assertTrue(store.unrecognizedIds.isEmpty())
+        assertTrue(store.unrecognizedEntries.isEmpty())
     }
 
     @Test
@@ -231,5 +233,34 @@ class LogCrashTest {
 
         assertEquals(0, http.sentRequests.size)
         assertEquals(listOf("legacy-otel-file"), store.purgedUnrecognizedIds)
+    }
+
+    @Test
+    fun uploaderPurgesOnlyStaleUnrecognizedFilesRespectingAgeGate() = runTest {
+        val provider = FakePlatformProvider(minFileAgeForReadMillis = 5_000)
+        val store = FakeFileStore()
+        store.seedUnrecognized("too-young-legacy", ageMillis = 100)
+        store.seedUnrecognized("stale-legacy", ageMillis = 10_000)
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
+        assertEquals(listOf("stale-legacy"), store.purgedUnrecognizedIds)
+        assertEquals(listOf("too-young-legacy"), store.unrecognizedEntries.map { it.id })
+    }
+
+    @Test
+    fun uploaderRethrowsCancellationFromPurgeWhenRemoteLoggingDisabled() = runTest {
+        val provider = FakePlatformProvider(remoteLogLevel = "NONE")
+        val store = FakeFileStore()
+        store.deleteUnrecognizedException = CancellationException("cancelled")
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        assertFailsWith<CancellationException> { uploader.start() }
+        assertTrue(store.purgedUnrecognizedIds.isEmpty())
     }
 }

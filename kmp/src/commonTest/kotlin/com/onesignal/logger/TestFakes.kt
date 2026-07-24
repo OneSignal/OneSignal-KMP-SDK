@@ -60,8 +60,10 @@ internal class FakeFileStore : ILogFileStore {
     val entries = mutableListOf<Entry>()
     val deletedIds = mutableListOf<String>()
 
-    /** Legacy/foreign ids that [deleteUnrecognizedEntries] should remove. */
-    val unrecognizedIds = mutableListOf<String>()
+    data class UnrecognizedEntry(val id: String, val ageMillis: Long)
+
+    /** Legacy/foreign entries that [deleteUnrecognizedEntries] may remove. */
+    val unrecognizedEntries = mutableListOf<UnrecognizedEntry>()
     val purgedUnrecognizedIds = mutableListOf<String>()
     private var counter = 0
 
@@ -70,6 +72,9 @@ internal class FakeFileStore : ILogFileStore {
 
     /** When set, [listReadable] throws instead of returning entries. */
     var listReadableException: Exception? = null
+
+    /** When set, [deleteUnrecognizedEntries] throws instead of purging. */
+    var deleteUnrecognizedException: Exception? = null
 
     override fun save(bytes: ByteArray): Boolean {
         entries.add(Entry("file-${counter++}", bytes, savedAgeMillis))
@@ -80,8 +85,8 @@ internal class FakeFileStore : ILogFileStore {
         entries.add(Entry(id, bytes, ageMillis))
     }
 
-    fun seedUnrecognized(id: String) {
-        unrecognizedIds.add(id)
+    fun seedUnrecognized(id: String, ageMillis: Long = Long.MAX_VALUE) {
+        unrecognizedEntries.add(UnrecognizedEntry(id, ageMillis))
     }
 
     override suspend fun listReadable(minAgeMillis: Long): List<StoredLogFile> {
@@ -96,11 +101,12 @@ internal class FakeFileStore : ILogFileStore {
         entries.removeAll { it.id == id }
     }
 
-    override suspend fun deleteUnrecognizedEntries(): Int {
-        purgedUnrecognizedIds.addAll(unrecognizedIds)
-        val count = unrecognizedIds.size
-        unrecognizedIds.clear()
-        return count
+    override suspend fun deleteUnrecognizedEntries(minAgeMillis: Long): Int {
+        deleteUnrecognizedException?.let { throw it }
+        val toPurge = unrecognizedEntries.filter { it.ageMillis >= minAgeMillis }
+        purgedUnrecognizedIds.addAll(toPurge.map { it.id })
+        unrecognizedEntries.removeAll(toPurge.toSet())
+        return toPurge.size
     }
 }
 

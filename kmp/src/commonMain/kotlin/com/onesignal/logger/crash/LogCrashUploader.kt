@@ -4,6 +4,7 @@ import com.onesignal.logger.ILogFileStore
 import com.onesignal.logger.ILogTelemetryRemote
 import com.onesignal.logger.ILogger
 import com.onesignal.logger.ILoggerPlatformProvider
+import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.delay
 
 /**
@@ -34,8 +35,9 @@ class LogCrashUploader internal constructor(
             purgeUnrecognizedEntries()
             return
         }
-        logger.info(
-            "LogCrashUploader: starting path=${platformProvider.crashStoragePath} " +
+        logger.info("LogCrashUploader: starting")
+        logger.debug(
+            "LogCrashUploader: path=${platformProvider.crashStoragePath} " +
                 "minFileAgeMs=${platformProvider.minFileAgeForReadMillis} level=$remoteLogLevel",
         )
         // Purge must run even if listReadable/export throws — a messy crash dir is
@@ -66,9 +68,12 @@ class LogCrashUploader internal constructor(
      * disk-buffering files from when both modules shared one crash directory.
      */
     private suspend fun purgeUnrecognizedEntries() {
+        val minAgeMillis = platformProvider.minFileAgeForReadMillis
         val deleted =
             try {
-                fileStore.deleteUnrecognizedEntries()
+                fileStore.deleteUnrecognizedEntries(minAgeMillis)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 logger.error("LogCrashUploader: failed to purge unrecognized files: ${e.message}")
                 return
@@ -76,7 +81,7 @@ class LogCrashUploader internal constructor(
         if (deleted > 0) {
             logger.info("LogCrashUploader: purged $deleted unrecognized/legacy crash file(s)")
         } else {
-            logger.info("LogCrashUploader: no unrecognized/legacy crash files to purge")
+            logger.debug("LogCrashUploader: no unrecognized/legacy crash files to purge")
         }
     }
 
@@ -86,24 +91,26 @@ class LogCrashUploader internal constructor(
             reports.joinToString(separator = "; ") { report ->
                 "id=${report.id} bytes=${report.bytes.size}"
             }
-        logger.info(
+        logger.debug(
             "LogCrashUploader: readable reports count=${reports.size}" +
                 if (reports.isEmpty()) "" else " [$inventory]",
         )
         var sent = 0
         for (report in reports) {
-            logger.info(
+            logger.debug(
                 "LogCrashUploader: posting id=${report.id} bytes=${report.bytes.size} " +
                     "(OTLP/protobuf payload)",
             )
             val success =
                 try {
                     remote.exportEncoded(report.bytes)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     logger.error("LogCrashUploader: export threw for ${report.id}: ${e.message}")
                     false
                 }
-            logger.info("LogCrashUploader: done id=${report.id} success=$success")
+            logger.debug("LogCrashUploader: done id=${report.id} success=$success")
             if (success) {
                 // Only delete on success so a failed upload is retried next launch.
                 fileStore.delete(report.id)
@@ -113,6 +120,6 @@ class LogCrashUploader internal constructor(
                 break
             }
         }
-        logger.info("LogCrashUploader: pass complete sent=$sent of ${reports.size}")
+        logger.debug("LogCrashUploader: pass complete sent=$sent of ${reports.size}")
     }
 }
