@@ -38,8 +38,13 @@ class LogCrashUploader internal constructor(
             "LogCrashUploader: starting path=${platformProvider.crashStoragePath} " +
                 "minFileAgeMs=${platformProvider.minFileAgeForReadMillis} level=$remoteLogLevel",
         )
-        internalStart()
-        purgeUnrecognizedEntries()
+        // Purge must run even if listReadable/export throws — a messy crash dir is
+        // exactly when leftover legacy files most need reclaiming.
+        try {
+            internalStart()
+        } finally {
+            purgeUnrecognizedEntries()
+        }
     }
 
     /**

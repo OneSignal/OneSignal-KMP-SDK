@@ -68,6 +68,9 @@ internal class FakeFileStore : ILogFileStore {
     /** Age assigned to records saved via [save]; tests can tweak per scenario. */
     var savedAgeMillis: Long = Long.MAX_VALUE
 
+    /** When set, [listReadable] throws instead of returning entries. */
+    var listReadableException: Exception? = null
+
     override fun save(bytes: ByteArray): Boolean {
         entries.add(Entry("file-${counter++}", bytes, savedAgeMillis))
         return true
@@ -81,10 +84,12 @@ internal class FakeFileStore : ILogFileStore {
         unrecognizedIds.add(id)
     }
 
-    override suspend fun listReadable(minAgeMillis: Long): List<StoredLogFile> =
-        entries
+    override suspend fun listReadable(minAgeMillis: Long): List<StoredLogFile> {
+        listReadableException?.let { throw it }
+        return entries
             .filter { it.ageMillis >= minAgeMillis && it.id !in deletedIds }
             .map { StoredLogFile(it.id, it.bytes) }
+    }
 
     override suspend fun delete(id: String) {
         deletedIds.add(id)

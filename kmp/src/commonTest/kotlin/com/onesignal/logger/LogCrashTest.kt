@@ -211,4 +211,25 @@ class LogCrashTest {
         assertTrue(store.deletedIds.isEmpty())
         assertEquals(listOf("legacy-otel-file"), store.purgedUnrecognizedIds)
     }
+
+    @Test
+    fun uploaderPurgesUnrecognizedFilesEvenWhenListReadableThrows() = runTest {
+        val provider = FakePlatformProvider(minFileAgeForReadMillis = 0)
+        val store = FakeFileStore()
+        store.listReadableException = IllegalStateException("corrupt crash dir")
+        store.seedUnrecognized("legacy-otel-file")
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        try {
+            uploader.start()
+            // start() may rethrow from internalStart; purge must still have run.
+        } catch (_: IllegalStateException) {
+            // expected
+        }
+
+        assertEquals(0, http.sentRequests.size)
+        assertEquals(listOf("legacy-otel-file"), store.purgedUnrecognizedIds)
+    }
 }

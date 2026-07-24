@@ -66,8 +66,10 @@ interface ILogFileStore {
      * bare-millis files left in a shared crash directory).
      *
      * Owned records — including failed uploads and files still under the age gate —
-     * must be preserved. Default is a no-op for test doubles / platforms with no
-     * shared-directory legacy.
+     * must be preserved. Implementations should also apply a minimal age margin to
+     * unrecognized files when both modules may briefly share the directory during a
+     * module-flag transition, so an in-flight legacy write is not deleted mid-write.
+     * Default is a no-op for test doubles / platforms with no shared-directory legacy.
      *
      * @return number of unrecognized entries deleted
      */
