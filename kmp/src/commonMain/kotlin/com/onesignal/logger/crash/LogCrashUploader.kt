@@ -4,8 +4,8 @@ import com.onesignal.logger.ILogFileStore
 import com.onesignal.logger.ILogTelemetryRemote
 import com.onesignal.logger.ILogger
 import com.onesignal.logger.ILoggerPlatformProvider
-import kotlin.coroutines.cancellation.CancellationException
 import kotlinx.coroutines.delay
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Reads locally-buffered crash reports and ships them to OneSignal on the next app
