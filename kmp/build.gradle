@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFrameworkConfig
+
 plugins {
     id 'org.jetbrains.kotlin.multiplatform'
     id 'com.android.library'
@@ -127,9 +129,14 @@ kotlin {
     // `kmp-android`. The standalone KMP CI and a future iOS host (neither of
     // which sets the publish flag) still get the iOS targets they need.
     if (!publishSharedKmp) {
-        iosX64()
-        iosArm64()
-        iosSimulatorArm64()
+        def oneSignalKmpXcFramework = new XCFrameworkConfig(project, 'OneSignalKMP')
+        [iosX64(), iosArm64(), iosSimulatorArm64()].each { target ->
+            target.binaries.framework {
+                baseName = 'OneSignalKMP'
+                isStatic = true
+                oneSignalKmpXcFramework.add(it)
+            }
+        }
     }
 
     sourceSets {
@@ -145,6 +152,45 @@ kotlin {
             dependencies {
                 implementation kotlin('test')
                 implementation "org.jetbrains.kotlinx:kotlinx-coroutines-test:$coroutinesVersion"
+            }
+        }
+    }
+}
+
+if (!publishSharedKmp) {
+    tasks.register('verifyOneSignalKMPXCFramework') {
+        dependsOn 'assembleOneSignalKMPReleaseXCFramework'
+
+        def xcframework = layout.buildDirectory.dir('XCFrameworks/release/OneSignalKMP.xcframework')
+        inputs.dir(xcframework)
+
+        doLast {
+            def xcframeworkDir = xcframework.get().asFile
+            def deviceFramework =
+                    new File(xcframeworkDir, 'ios-arm64/OneSignalKMP.framework')
+            def simulatorFramework =
+                    new File(xcframeworkDir, 'ios-arm64_x86_64-simulator/OneSignalKMP.framework')
+            [deviceFramework, simulatorFramework].each { framework ->
+                if (!framework.isDirectory()) {
+                    throw new GradleException("Missing XCFramework slice: ${framework}")
+                }
+            }
+
+            def header = new File(deviceFramework, 'Headers/OneSignalKMP.h')
+            if (!header.isFile()) {
+                throw new GradleException("Missing generated Objective-C header: ${header}")
+            }
+
+            def headerText = header.text
+            ['LoggerFactory', 'ILogger', 'ILoggerPlatformProvider', 'ILogHttpSender', 'ILogFileStore'].each { publicType ->
+                if (!headerText.contains(publicType)) {
+                    throw new GradleException("Generated Objective-C header does not expose ${publicType}")
+                }
+            }
+            ['LogBatchProcessor', 'LogTelemetryRemoteImpl', 'LogTelemetryCrashImpl'].each { internalType ->
+                if (headerText.contains(internalType)) {
+                    throw new GradleException("Generated Objective-C header exposes internal type ${internalType}")
+                }
             }
         }
     }
