@@ -1,6 +1,6 @@
 Pod::Spec.new do |spec|
   spec.name = 'OneSignalKMP'
-  spec.version = ENV.fetch('ONESIGNAL_KMP_VERSION', '0.0.0')
+  spec.version = ENV.fetch('ONESIGNAL_KMP_VERSION', '0.1.1')
   spec.summary = 'Shared Kotlin Multiplatform code for OneSignal SDKs'
   spec.homepage = 'https://github.com/OneSignal/OneSignal-KMP-SDK'
   spec.license = { type: 'MIT', file: 'LICENSE' }
