@@ -134,6 +134,10 @@ kotlin {
             target.binaries.framework {
                 baseName = 'OneSignalKMP'
                 isStatic = true
+                freeCompilerArgs += '-Xoverride-konan-properties=' +
+                        'osVersionMin.ios_arm64=11.0;' +
+                        'osVersionMin.ios_simulator_arm64=11.0;' +
+                        'osVersionMin.ios_x64=11.0'
                 oneSignalKmpXcFramework.add(it)
             }
         }

@@ -4,7 +4,7 @@ name: Release
 #   1. verifies the code (spotless + JVM/Android + iOS simulator tests + XCFramework),
 #   2. computes the next vX.Y.Z from the latest tag (no need to remember the number),
 #   3. creates the tag + a GitHub Release with the XCFramework, and
-#   4. optionally opens a submodule-bump PR in the Android SDK repo.
+#   4. optionally opens submodule-bump PRs in the Android and iOS SDK repos.
 
 on:
   workflow_dispatch:
@@ -19,6 +19,10 @@ on:
         default: patch
       open_android_pr:
         description: "Open a submodule-bump PR in OneSignal-Android-SDK"
+        type: boolean
+        default: true
+      open_ios_pr:
+        description: "Open a submodule-bump PR in OneSignal-iOS-SDK"
         type: boolean
         default: true
 
@@ -163,6 +167,17 @@ jobs:
     needs: release
     if: ${{ inputs.open_android_pr }}
     uses: OneSignal/OneSignal-Android-SDK/.github/workflows/bump-kmp-submodule.yml@main
+    secrets:
+      GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
+    with:
+      kmp_version: ${{ needs.release.outputs.version }}
+      kmp_sha: ${{ needs.release.outputs.sha }}
+
+  # --- Open an automated submodule-bump PR in the iOS SDK repo. ---
+  bump-ios:
+    needs: release
+    if: ${{ inputs.open_ios_pr }}
+    uses: OneSignal/OneSignal-iOS-SDK/.github/workflows/bump-kmp-submodule.yml@main
     secrets:
       GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
     with:

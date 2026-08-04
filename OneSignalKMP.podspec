@@ -10,7 +10,7 @@ Pod::Spec.new do |spec|
     tag: "v#{spec.version}",
   }
 
-  spec.ios.deployment_target = '12.0'
+  spec.ios.deployment_target = '11.0'
   spec.static_framework = true
   spec.vendored_frameworks = 'kmp/build/XCFrameworks/release/OneSignalKMP.xcframework'
   spec.prepare_command = './gradlew :kmp:verifyOneSignalKMPXCFramework --console=plain'
