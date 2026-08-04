@@ -73,7 +73,9 @@ pod 'OneSignalKMP', path: '../OneSignal-KMP-SDK'
 `OneSignalKMP.podspec` vendors the generated framework into the host target. Its
 `prepare_command` builds the artifact for downloaded/tagged pods; CocoaPods does not
 guarantee that command runs for a local `path` pod, so local consumers must run the
-Gradle assembly command first.
+Gradle assembly command first. The checked-in podspec defaults to `0.1.1` solely for
+local validation and is not version-synchronized by the Release workflow. Publishing
+versioned podspecs backed by each GitHub Release XCFramework is deferred.
 
 To release Android and iOS in lockstep: tag this repo, then bump the submodule pointer
 to that tag in both SDK repos.

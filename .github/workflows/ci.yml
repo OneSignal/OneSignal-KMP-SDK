@@ -21,7 +21,7 @@ jobs:
   # (JVM/Android + the Kotlin/Native iOS simulator), and XCFramework packaging.
   # Named to match `release.yml`'s `verify` job so both surface identically.
   verify:
-    name: Spotless + unit tests + XCFramework
+    name: JVM/Android + iOS simulator + XCFramework
     # macOS runner so the Kotlin/Native iOS simulator tests can run.
     runs-on: macos-14
     steps:
@@ -53,6 +53,19 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
             build
+
+      - name: "[Package] Swift import smoke test"
+        run: |
+          xcrun --sdk iphonesimulator swiftc \
+            -target arm64-apple-ios12.0-simulator \
+            -F kmp/build/XCFrameworks/release/OneSignalKMP.xcframework/ios-arm64_x86_64-simulator \
+            -typecheck - <<'EOF'
+          import OneSignalKMP
+          let factory: LoggerFactory = LoggerFactory.shared
+          EOF
+
+      - name: "[Package] CocoaPods lint"
+        run: pod lib lint OneSignalKMP.podspec --allow-warnings --skip-import-validation
 
       - name: "[Artifacts] Test results"
         if: failure()
