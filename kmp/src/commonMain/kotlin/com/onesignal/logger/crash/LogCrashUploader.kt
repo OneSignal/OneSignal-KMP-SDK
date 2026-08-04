@@ -27,6 +27,7 @@ class LogCrashUploader internal constructor(
     /**
      * Starts the uploader. No-op when remote logging is disabled (NONE / null level).
      */
+    @Throws(Exception::class)
     suspend fun start() {
         val remoteLogLevel = platformProvider.remoteLogLevel
         if (remoteLogLevel == null || remoteLogLevel == "NONE") {

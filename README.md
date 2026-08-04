@@ -23,11 +23,15 @@ the internal OneSignal Android and iOS SDK teams.
 
 `androidTarget`, `iosX64`, `iosArm64`, `iosSimulatorArm64`.
 
+The iOS targets are packaged as one static `OneSignalKMP.xcframework`. It contains
+an `ios-arm64` device slice and an `ios-arm64_x86_64-simulator` slice.
+
 ## Build & test
 
 ```bash
 ./gradlew :kmp:testDebugUnitTest        # JVM/Android unit tests
 ./gradlew :kmp:iosSimulatorArm64Test    # iOS simulator (Kotlin/Native) tests
+./gradlew :kmp:verifyOneSignalKMPXCFramework # release XCFramework + API smoke check
 ./gradlew spotlessCheck                 # formatting
 ```
 
@@ -36,10 +40,42 @@ macOS runner (required for the iOS simulator tests).
 
 ## How the SDKs consume this repo
 
-Each SDK adds this repo as a git submodule and includes `:kmp` as a Gradle source
-project (no binary artifact). The module's `build.gradle` is written to resolve under
-both this repo's root and the host SDK root, so a single source file works in both
-contexts.
+Each SDK pins this repo as a git submodule. Android includes `:kmp` as a Gradle source
+project. iOS builds the submodule into `OneSignalKMP.xcframework` and links that binary
+through Swift Package Manager or CocoaPods.
+
+### Swift Package Manager
+
+Build the release XCFramework before resolving the local package:
+
+```bash
+./gradlew :kmp:assembleOneSignalKMPReleaseXCFramework
+```
+
+Then add this checkout as a local package in Xcode, or reference it from the host
+package:
+
+```swift
+.package(path: "../OneSignal-KMP-SDK")
+```
+
+The package product and Swift module are both named `OneSignalKMP`. `Package.swift`
+points to the generated framework under `kmp/build/XCFrameworks/release`.
+
+### CocoaPods
+
+Build the release XCFramework, then reference the checkout from the host Podfile:
+
+```ruby
+pod 'OneSignalKMP', path: '../OneSignal-KMP-SDK'
+```
+
+`OneSignalKMP.podspec` vendors the generated framework into the host target. Its
+`prepare_command` builds the artifact for downloaded/tagged pods; CocoaPods does not
+guarantee that command runs for a local `path` pod, so local consumers must run the
+Gradle assembly command first. The checked-in podspec defaults to `0.1.1` solely for
+local validation and is not version-synchronized by the Release workflow. Publishing
+versioned podspecs backed by each GitHub Release XCFramework is deferred.
 
 To release Android and iOS in lockstep: tag this repo, then bump the submodule pointer
 to that tag in both SDK repos.
@@ -56,7 +92,8 @@ manual tagging or version bookkeeping required.
    - verifies the code (spotless + JVM/Android + iOS simulator tests),
    - computes the next `vX.Y.Z` from the latest tag (e.g. latest `v0.1.0` + `minor`
      → `v0.2.0`; first release starts from `v0.0.0`),
-   - creates the tag and a GitHub Release with auto-generated notes, and
+   - creates the tag and a GitHub Release with auto-generated notes,
+   - attaches `OneSignalKMP.xcframework.zip` and its SwiftPM checksum, and
    - (if selected) opens a PR in `OneSignal-Android-SDK` that re-points the submodule
      gitlink to the new tag.
 
@@ -64,9 +101,10 @@ Review and merge the Android PR to complete that side of the release.
 
 ### iOS
 
-iOS bumping is deferred until this repo builds and publishes an XCFramework. Once the
-packaging block + publish step exist, a `bump-ios` job mirroring `bump-android` will
-open a version-bump PR against the iOS SDK's SPM/CocoaPods manifest.
+The release XCFramework is available on each GitHub Release for a host repository to
+vendor as a remote SwiftPM binary target. The checked-in `Package.swift` and podspec
+support submodule/path-based consumption while the iOS SDK integration and automated
+`bump-ios` release job are implemented separately.
 
 ### Required configuration (one-time)
 

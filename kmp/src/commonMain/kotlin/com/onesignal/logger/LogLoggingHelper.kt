@@ -6,6 +6,7 @@ package com.onesignal.logger
  * entry point that hides the record-construction details.
  */
 object LogLoggingHelper {
+    @Throws(Exception::class)
     suspend fun log(
         telemetry: ILogTelemetry,
         level: String,

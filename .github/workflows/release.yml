@@ -1,13 +1,10 @@
 name: Release
 
 # Manual "cut a release" button. Pick a semver bump type and the workflow:
-#   1. verifies the code (spotless + JVM/Android + iOS simulator tests),
+#   1. verifies the code (spotless + JVM/Android + iOS simulator tests + XCFramework),
 #   2. computes the next vX.Y.Z from the latest tag (no need to remember the number),
-#   3. creates the tag + a GitHub Release, and
+#   3. creates the tag + a GitHub Release with the XCFramework, and
 #   4. optionally opens a submodule-bump PR in the Android SDK repo.
-#
-# iOS is intentionally deferred until the XCFramework packaging + publish step exists;
-# once it does, add a `bump-ios` job mirroring `bump-android`.
 
 on:
   workflow_dispatch:
@@ -52,6 +49,36 @@ jobs:
 
       - name: "[Test] Unit tests (JVM/Android + iOS simulator)"
         run: ./gradlew :kmp:testDebugUnitTest :kmp:iosSimulatorArm64Test --console=plain --continue
+
+      - name: "[Package] XCFramework"
+        run: |
+          ./gradlew :kmp:verifyOneSignalKMPXCFramework --console=plain
+          xcodebuild -scheme OneSignalKMP \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+          xcrun --sdk iphonesimulator swiftc \
+            -target arm64-apple-ios12.0-simulator \
+            -F kmp/build/XCFrameworks/release/OneSignalKMP.xcframework/ios-arm64_x86_64-simulator \
+            -typecheck - <<'EOF'
+          import OneSignalKMP
+          let factory: LoggerFactory = LoggerFactory.shared
+          EOF
+          pod lib lint OneSignalKMP.podspec --allow-warnings --skip-import-validation
+          ditto -c -k --sequesterRsrc --keepParent \
+            kmp/build/XCFrameworks/release/OneSignalKMP.xcframework \
+            OneSignalKMP.xcframework.zip
+          swift package compute-checksum OneSignalKMP.xcframework.zip \
+            > OneSignalKMP.xcframework.zip.sha256
+
+      - name: "[Artifacts] XCFramework"
+        uses: actions/upload-artifact@v4
+        with:
+          name: onesignal-kmp-xcframework
+          path: |
+            OneSignalKMP.xcframework.zip
+            OneSignalKMP.xcframework.zip.sha256
 
   # --- Compute version, tag, and publish the GitHub Release. ---
   release:
@@ -108,12 +135,20 @@ jobs:
           git tag -a "${{ steps.version.outputs.version }}" -m "Release ${{ steps.version.outputs.version }}"
           git push origin "${{ steps.version.outputs.version }}"
 
+      - name: "[Artifacts] Download XCFramework"
+        uses: actions/download-artifact@v4
+        with:
+          name: onesignal-kmp-xcframework
+
       - name: "[Release] Create GitHub Release"
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: ${{ steps.version.outputs.version }}
           generate_release_notes: true
+          files: |
+            OneSignalKMP.xcframework.zip
+            OneSignalKMP.xcframework.zip.sha256
 
   # --- Open an automated submodule-bump PR in the Android SDK repo. ---
   # Delegates to a reusable workflow that lives IN the Android repo, mirroring the
