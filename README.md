@@ -87,37 +87,35 @@ manual tagging or version bookkeeping required.
 
 1. Go to **Actions → Release → Run workflow**.
 2. Pick a **bump** type (`patch` / `minor` / `major`) and whether to open the Android
-   bump PR.
+   and iOS bump PRs.
 3. The workflow then:
    - verifies the code (spotless + JVM/Android + iOS simulator tests),
    - computes the next `vX.Y.Z` from the latest tag (e.g. latest `v0.1.0` + `minor`
      → `v0.2.0`; first release starts from `v0.0.0`),
    - creates the tag and a GitHub Release with auto-generated notes,
    - attaches `OneSignalKMP.xcframework.zip` and its SwiftPM checksum, and
-   - (if selected) opens a PR in `OneSignal-Android-SDK` that re-points the submodule
-     gitlink to the new tag.
+   - (if selected) opens PRs in `OneSignal-Android-SDK` and `OneSignal-iOS-SDK` that
+     re-point their submodule gitlinks to the new tag.
 
-Review and merge the Android PR to complete that side of the release.
+Review and merge both host SDK PRs to keep Android and iOS on the same KMP release.
 
 ### iOS
 
-The release XCFramework is available on each GitHub Release for a host repository to
-vendor as a remote SwiftPM binary target. The checked-in `Package.swift` and podspec
-support submodule/path-based consumption while the iOS SDK integration and automated
-`bump-ios` release job are implemented separately.
+The iOS SDK pins this repository as a submodule, builds the static XCFramework from
+that checkout, and links it internally into `OneSignalCore`. The optional `bump-ios`
+release job opens a PR that advances the gitlink to the new tag. Each GitHub Release
+also carries the packaged XCFramework and SwiftPM checksum.
 
 ### Required configuration (one-time)
 
-The Android bump PR is opened by a **reusable workflow in the Android repo**
-(`.github/workflows/bump-kmp-submodule.yml`), which this workflow calls and passes the
-shared org push token to — the same `GH_PUSH_TOKEN` used across the other OneSignal SDK
-repos (`sdk-shared`, the wrapper SDKs, etc.). No dedicated GitHub App or new secret is
-created; the default `GITHUB_TOKEN` cannot write to another repo, but `GH_PUSH_TOKEN`
-can.
+The host bump PRs are opened by reusable workflows in the Android and iOS repositories
+(`.github/workflows/bump-kmp-submodule.yml`). This repository calls them with the shared
+org `GH_PUSH_TOKEN` used across the OneSignal SDK repos. The default `GITHUB_TOKEN`
+cannot write to another repository.
 
 To enable it, an org admin grants this repo access to the existing org secret:
 **Org → Settings → Secrets and variables → Actions → `GH_PUSH_TOKEN` → Repository
 access → add `OneSignal-KMP-SDK`.**
 
-Without that access, run the workflow with **open_android_pr** unchecked to tag +
-release only, then bump the Android submodule manually.
+Without that access, run the workflow with **open_android_pr** and **open_ios_pr**
+unchecked, then bump the host submodules manually.
