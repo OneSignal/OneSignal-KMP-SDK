@@ -99,31 +99,43 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: "[Version] Compute next tag"
+      - name: "[Version] Resolve release tag"
         id: version
         run: |
           set -euo pipefail
-          latest="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
-          if [ -z "$latest" ]; then
-            echo "No existing tags; starting from v0.0.0"
-            major=0; minor=0; patch=0
-          else
-            echo "Latest tag: $latest"
-            ver="${latest#v}"
-            IFS='.' read -r major minor patch <<< "$ver"
-          fi
-          case "${{ inputs.bump }}" in
-            major) major=$((major + 1)); minor=0; patch=0 ;;
-            minor) minor=$((minor + 1)); patch=0 ;;
-            patch) patch=$((patch + 1)) ;;
-          esac
-          version="v${major}.${minor}.${patch}"
           sha="$(git rev-parse HEAD)"
-          echo "Next version: $version @ $sha"
+          version=""
+          while IFS= read -r tag; do
+            version="$tag"
+            break
+          done < <(git tag --points-at HEAD --list 'v*' --sort=-v:refname)
+          if [ -n "$version" ]; then
+            echo "Commit $sha is already released as $version; skipping tag and release creation."
+            echo "create_release=false" >> "$GITHUB_OUTPUT"
+          else
+            latest="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
+            if [ -z "$latest" ]; then
+              echo "No existing tags; starting from v0.0.0"
+              major=0; minor=0; patch=0
+            else
+              echo "Latest tag: $latest"
+              ver="${latest#v}"
+              IFS='.' read -r major minor patch <<< "$ver"
+            fi
+            case "${{ inputs.bump }}" in
+              major) major=$((major + 1)); minor=0; patch=0 ;;
+              minor) minor=$((minor + 1)); patch=0 ;;
+              patch) patch=$((patch + 1)) ;;
+            esac
+            version="v${major}.${minor}.${patch}"
+            echo "Next version: $version @ $sha"
+            echo "create_release=true" >> "$GITHUB_OUTPUT"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: "[Version] Guard against existing tag"
+        if: steps.version.outputs.create_release == 'true'
         run: |
           set -euo pipefail
           if git rev-parse "${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
@@ -132,6 +144,7 @@ jobs:
           fi
 
       - name: "[Tag] Create and push"
+        if: steps.version.outputs.create_release == 'true'
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -140,11 +153,13 @@ jobs:
           git push origin "${{ steps.version.outputs.version }}"
 
       - name: "[Artifacts] Download XCFramework"
+        if: steps.version.outputs.create_release == 'true'
         uses: actions/download-artifact@v4
         with:
           name: onesignal-kmp-xcframework
 
       - name: "[Release] Create GitHub Release"
+        if: steps.version.outputs.create_release == 'true'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.version }}
