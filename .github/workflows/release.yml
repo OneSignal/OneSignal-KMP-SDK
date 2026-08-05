@@ -92,7 +92,6 @@ jobs:
       contents: write
     outputs:
       version: ${{ steps.version.outputs.version }}
-      sha: ${{ steps.version.outputs.sha }}
     steps:
       - name: "[Checkout] Repo (full history + tags)"
         uses: actions/checkout@v7
@@ -132,7 +131,6 @@ jobs:
             echo "create_release=true" >> "$GITHUB_OUTPUT"
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-          echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: "[Version] Guard against existing tag"
         if: steps.version.outputs.create_release == 'true'
@@ -188,7 +186,6 @@ jobs:
       GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
     with:
       kmp_version: ${{ needs.release.outputs.version }}
-      kmp_sha: ${{ needs.release.outputs.sha }}
 
   # --- Open an automated submodule-bump PR in the iOS SDK repo. ---
   bump-ios:
@@ -199,4 +196,3 @@ jobs:
       GH_PUSH_TOKEN: ${{ secrets.GH_PUSH_TOKEN }}
     with:
       kmp_version: ${{ needs.release.outputs.version }}
-      kmp_sha: ${{ needs.release.outputs.sha }}
