@@ -1,8 +1,8 @@
 name: Release
 
-# Manual "cut a release" button. Pick a semver bump type and the workflow:
+# Manual "cut a release" button. The workflow:
 #   1. verifies the code (spotless + JVM/Android + iOS simulator tests + XCFramework),
-#   2. computes the next vX.Y.Z from the latest tag (no need to remember the number),
+#   2. computes the next vX.Y.Z from semantic PR titles since the latest release,
 #   3. creates the tag + a GitHub Release with the XCFramework, and
 #   4. optionally opens submodule-bump PRs in the Android and iOS SDK repos.
 
@@ -10,13 +10,14 @@ on:
   workflow_dispatch:
     inputs:
       bump:
-        description: "Semver bump type (applied to the latest tag)"
+        description: "Semver bump type (auto uses semantic PR titles)"
         type: choice
         options:
+          - auto
           - patch
           - minor
           - major
-        default: patch
+        default: auto
       open_android_pr:
         description: "Open a submodule-bump PR in OneSignal-Android-SDK"
         type: boolean
@@ -90,6 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: read
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
@@ -98,8 +100,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: "[Version] Determine next semantic version"
+        id: next-version
+        if: inputs.bump == 'auto'
+        uses: OneSignal/sdk-shared/.github/actions/determine-next-version@main
+        with:
+          github-token: ${{ github.token }}
+          target-repo: ${{ github.repository }}
+          target-branch: ${{ github.ref_name }}
+          tag-prefix: v
+
       - name: "[Version] Resolve release tag"
         id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          NEXT_VERSION: ${{ steps.next-version.outputs.version }}
+          RELEASE_NEEDED: ${{ steps.next-version.outputs.release-needed }}
         run: |
           set -euo pipefail
           sha="$(git rev-parse HEAD)"
@@ -112,21 +128,37 @@ jobs:
             echo "Commit $sha is already released as $version; skipping tag and release creation."
             echo "create_release=false" >> "$GITHUB_OUTPUT"
           else
-            latest="$(git tag --list 'v*' --sort=-v:refname | head -n1)"
-            if [ -z "$latest" ]; then
-              echo "No existing tags; starting from v0.0.0"
-              major=0; minor=0; patch=0
+            if [ "$BUMP" = "auto" ]; then
+              if [ "$RELEASE_NEEDED" != "true" ] || [ -z "$NEXT_VERSION" ]; then
+                echo "::error::No feat, fix, perf, or breaking pull requests found since the latest release."
+                exit 1
+              fi
+              version="v${NEXT_VERSION}"
             else
-              echo "Latest tag: $latest"
-              ver="${latest#v}"
-              IFS='.' read -r major minor patch <<< "$ver"
+              latest=""
+              while IFS= read -r tag; do
+                latest="$tag"
+                break
+              done < <(git tag --list 'v*' --sort=-v:refname)
+
+              if [[ ! "$latest" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+                echo "::error::Could not find a valid vX.Y.Z tag for the manual $BUMP bump."
+                exit 1
+              fi
+
+              IFS='.' read -r major minor patch <<< "${latest#v}"
+              case "$BUMP" in
+                major) major=$((major + 1)); minor=0; patch=0 ;;
+                minor) minor=$((minor + 1)); patch=0 ;;
+                patch) patch=$((patch + 1)) ;;
+                *)
+                  echo "::error::Unsupported bump type '$BUMP'."
+                  exit 1
+                  ;;
+              esac
+              version="v${major}.${minor}.${patch}"
             fi
-            case "${{ inputs.bump }}" in
-              major) major=$((major + 1)); minor=0; patch=0 ;;
-              minor) minor=$((minor + 1)); patch=0 ;;
-              patch) patch=$((patch + 1)) ;;
-            esac
-            version="v${major}.${minor}.${patch}"
+
             echo "Next version: $version @ $sha"
             echo "create_release=true" >> "$GITHUB_OUTPUT"
           fi
