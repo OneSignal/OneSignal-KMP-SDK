@@ -143,12 +143,14 @@ jobs:
             exit 1
           fi
 
+      - name: "[Setup] Git user"
+        if: steps.version.outputs.create_release == 'true'
+        uses: OneSignal/sdk-shared/.github/actions/setup-git-user@main
+
       - name: "[Tag] Create and push"
         if: steps.version.outputs.create_release == 'true'
         run: |
           set -euo pipefail
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "${{ steps.version.outputs.version }}" -m "Release ${{ steps.version.outputs.version }}"
           git push origin "${{ steps.version.outputs.version }}"
 
