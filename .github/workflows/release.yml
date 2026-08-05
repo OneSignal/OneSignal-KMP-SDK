@@ -37,16 +37,16 @@ jobs:
     runs-on: macos-14
     steps:
       - name: "[Checkout] Repo"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: "[Setup] JDK 17"
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
 
       - name: "[Setup] Gradle"
-        uses: gradle/actions/setup-gradle@v4
+        uses: gradle/actions/setup-gradle@v6
 
       - name: "[Code Formatting] Spotless"
         run: ./gradlew spotlessCheck --console=plain
@@ -77,7 +77,7 @@ jobs:
             > OneSignalKMP.xcframework.zip.sha256
 
       - name: "[Artifacts] XCFramework"
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: onesignal-kmp-xcframework
           path: |
@@ -95,7 +95,7 @@ jobs:
       sha: ${{ steps.version.outputs.sha }}
     steps:
       - name: "[Checkout] Repo (full history + tags)"
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -154,13 +154,13 @@ jobs:
 
       - name: "[Artifacts] Download XCFramework"
         if: steps.version.outputs.create_release == 'true'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: onesignal-kmp-xcframework
 
       - name: "[Release] Create GitHub Release"
         if: steps.version.outputs.create_release == 'true'
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.version.outputs.version }}
           name: ${{ steps.version.outputs.version }}
