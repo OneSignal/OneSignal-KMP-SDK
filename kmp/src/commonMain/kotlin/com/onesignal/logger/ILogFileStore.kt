@@ -41,8 +41,11 @@ interface ILogFileStore {
      *
      * @return `true` when the bytes were durably written; `false` on swallowed I/O
      *   failure so callers can avoid logging a false "saved" success.
+     *
+     * This method intentionally has no [Throws] annotation. Kotlin/Native imports a
+     * throwing Boolean-returning Objective-C requirement that Swift cannot implement;
+     * persistence failures are represented by the return value instead.
      */
-    @Throws(Exception::class)
     fun save(bytes: ByteArray): Boolean
 
     /**
