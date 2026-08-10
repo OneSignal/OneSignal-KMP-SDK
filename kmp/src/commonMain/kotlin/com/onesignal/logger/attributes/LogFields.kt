@@ -11,6 +11,25 @@ internal fun <K, V> MutableMap<K, V>.putIfValueNotNull(key: K, value: V?): Mutab
     return this
 }
 
+/** Like [putIfValueNotNull], but also skips blank strings so filter attrs stay sparse. */
+internal fun MutableMap<String, String>.putIfValueNotBlank(
+    key: String,
+    value: String?,
+): MutableMap<String, String> {
+    if (!value.isNullOrBlank()) {
+        this[key] = value
+    }
+    return this
+}
+
+/**
+ * Hosts may pass bare suffixes (`java_version`) or accidentally include the
+ * `ossdk.` prefix; normalize to the bare suffix so we never emit
+ * `ossdk.ossdk.*`.
+ */
+internal fun normalizeOssdkAttributeSuffix(key: String): String =
+    key.removePrefix("ossdk.").trim()
+
 /**
  * Top-level / resource attributes. Included on every export and, per OTLP, attached
  * to the `resource` rather than each record. Only values that cannot change during
@@ -21,13 +40,28 @@ internal fun <K, V> MutableMap<K, V>.putIfValueNotNull(key: K, value: V?): Mutab
  * features later). Because it is republished under the host SDK version, that
  * attribute is the only thing on the wire that ties a record back to the exact
  * KMP source that produced it.
+ *
+ * Optional host language / toolchain versions (`ossdk.kotlin_version`,
+ * `ossdk.swift_version`, plus any `additionalVersionAttributes`) ride along so
+ * dashboards can filter by the app's language stack.
  */
 internal class LogFieldsTopLevel(
     private val platformProvider: ILoggerPlatformProvider,
 ) {
     suspend fun getAttributes(): Map<String, String> {
-        val attributes: MutableMap<String, String> =
-            mutableMapOf(
+        val attributes: MutableMap<String, String> = mutableMapOf()
+
+        // Extras first so dedicated / core fields below always win on clash
+        // (e.g. a typo'd "install_id" or "kotlin_version" entry cannot clobber).
+        for ((key, value) in platformProvider.additionalVersionAttributes) {
+            val suffix = normalizeOssdkAttributeSuffix(key)
+            if (suffix.isNotEmpty() && !value.isNullOrBlank()) {
+                attributes["ossdk.$suffix"] = value
+            }
+        }
+
+        attributes.putAll(
+            mapOf(
                 "ossdk.install_id" to platformProvider.getInstallId(),
                 "ossdk.sdk_base" to platformProvider.sdkBase,
                 "ossdk.sdk_base_version" to platformProvider.sdkBaseVersion,
@@ -39,11 +73,14 @@ internal class LogFieldsTopLevel(
                 "os.name" to platformProvider.osName,
                 "os.version" to platformProvider.osVersion,
                 "os.build_id" to platformProvider.osBuildId,
-            )
+            ),
+        )
 
         attributes
             .putIfValueNotNull("ossdk.sdk_wrapper", platformProvider.sdkWrapper)
             .putIfValueNotNull("ossdk.sdk_wrapper_version", platformProvider.sdkWrapperVersion)
+            .putIfValueNotBlank("ossdk.kotlin_version", platformProvider.kotlinVersion)
+            .putIfValueNotBlank("ossdk.swift_version", platformProvider.swiftVersion)
 
         return attributes.toMap()
     }
