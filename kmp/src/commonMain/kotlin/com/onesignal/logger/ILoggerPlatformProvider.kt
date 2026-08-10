@@ -57,10 +57,11 @@ interface ILoggerPlatformProvider {
     /**
      * Extra static version labels for dashboard filtering. Each entry is
      * written as `ossdk.<key>` (keys should be short snake_case suffixes such
-     * as `java_version` or `xcode_version`). Core resource attrs and dedicated
-     * [kotlinVersion] / [swiftVersion] always win on key clash. Blank values
-     * are omitted. Defaults to empty for Kotlin implementors; Swift conformers
-     * must declare the member (return `[:]` until needed).
+     * as `java_version` or `xcode_version`). Reserved core / language suffixes
+     * (`install_id`, `kotlin_version`, `swift_version`, …) are rejected — use
+     * the dedicated properties instead. Blank values are omitted. Defaults to
+     * empty for Kotlin implementors; Swift conformers must declare the member
+     * (return `[:]` until needed).
      */
     val additionalVersionAttributes: Map<String, String>
         get() = emptyMap()

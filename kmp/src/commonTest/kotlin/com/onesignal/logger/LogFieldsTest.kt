@@ -62,12 +62,6 @@ class LogFieldsTest {
                 mapOf(
                     "java_version" to "17",
                     "xcode_version" to "16.2",
-                    // Dedicated fields win over colliding extra keys.
-                    "kotlin_version" to "should-not-win",
-                    "swift_version" to "should-not-win",
-                    // Core resource keys also win over extras.
-                    "install_id" to "forged-install",
-                    "kmp_version" to "forged-kmp",
                     // Accidental ossdk. prefix is stripped (no double prefix).
                     "ossdk.ndk_version" to "26.1",
                     // Blank extras are omitted.
@@ -81,10 +75,35 @@ class LogFieldsTest {
         assertEquals("26.1", attrs["ossdk.ndk_version"])
         assertEquals("2.1.0", attrs["ossdk.kotlin_version"])
         assertEquals("6.0", attrs["ossdk.swift_version"])
-        assertEquals("install-abc", attrs["ossdk.install_id"])
-        assertTrue(attrs["ossdk.kmp_version"]?.isNotEmpty() == true)
         assertFalse(attrs.containsKey("ossdk.ossdk.ndk_version"))
         assertFalse(attrs.containsKey("ossdk.agp_version"))
+    }
+
+    @Test
+    fun topLevelRejectsReservedAdditionalVersionAttributeKeys() = runTest {
+        // Dedicated language versions intentionally null — reserved extras must
+        // still be dropped, not fill the canonical keys.
+        val provider =
+            FakePlatformProvider(
+                additionalVersionAttributes =
+                mapOf(
+                    "kotlin_version" to "from-extras",
+                    "swift_version" to "from-extras",
+                    "install_id" to "forged-install",
+                    "kmp_version" to "forged-kmp",
+                    "sdk_wrapper" to "forged-wrapper",
+                    "java_version" to "17",
+                ),
+            )
+        val attrs = LogFieldsTopLevel(provider).getAttributes()
+
+        assertFalse(attrs.containsKey("ossdk.kotlin_version"))
+        assertFalse(attrs.containsKey("ossdk.swift_version"))
+        assertFalse(attrs.containsKey("ossdk.sdk_wrapper"))
+        assertEquals("install-abc", attrs["ossdk.install_id"])
+        assertTrue(attrs["ossdk.kmp_version"]?.isNotEmpty() == true)
+        assertTrue(attrs["ossdk.kmp_version"] != "forged-kmp")
+        assertEquals("17", attrs["ossdk.java_version"])
     }
 
     @Test
