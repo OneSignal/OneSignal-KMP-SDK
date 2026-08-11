@@ -26,9 +26,13 @@ internal fun MutableMap<String, String>.putIfValueNotBlank(
  * Hosts may pass bare suffixes (`java_version`) or accidentally include the
  * `ossdk.` prefix; normalize to the bare suffix so we never emit
  * `ossdk.ossdk.*`.
+ *
+ * Trim first so a leading space cannot keep `removePrefix` from matching
+ * (`" ossdk.kotlin_version"` would otherwise bypass reserved-key checks and
+ * emit `ossdk.ossdk.kotlin_version`).
  */
 internal fun normalizeOssdkAttributeSuffix(key: String): String =
-    key.removePrefix("ossdk.").trim()
+    key.trim().removePrefix("ossdk.").trim()
 
 /**
  * Canonical top-level `ossdk.*` suffixes owned by dedicated provider fields /

@@ -92,6 +92,9 @@ class LogFieldsTest {
                     "install_id" to "forged-install",
                     "kmp_version" to "forged-kmp",
                     "sdk_wrapper" to "forged-wrapper",
+                    // Leading whitespace must not keep removePrefix from matching,
+                    // or the reserved key slips through as ossdk.ossdk.kotlin_version.
+                    " ossdk.kotlin_version" to "spaced-reserved",
                     "java_version" to "17",
                 ),
             )
@@ -100,6 +103,7 @@ class LogFieldsTest {
         assertFalse(attrs.containsKey("ossdk.kotlin_version"))
         assertFalse(attrs.containsKey("ossdk.swift_version"))
         assertFalse(attrs.containsKey("ossdk.sdk_wrapper"))
+        assertFalse(attrs.containsKey("ossdk.ossdk.kotlin_version"))
         assertEquals("install-abc", attrs["ossdk.install_id"])
         assertTrue(attrs["ossdk.kmp_version"]?.isNotEmpty() == true)
         assertTrue(attrs["ossdk.kmp_version"] != "forged-kmp")
