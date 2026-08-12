@@ -22,17 +22,26 @@ internal fun MutableMap<String, String>.putIfValueNotBlank(
     return this
 }
 
+private const val OSSDK_PREFIX = "ossdk."
+
 /**
  * Hosts may pass bare suffixes (`java_version`) or accidentally include the
  * `ossdk.` prefix; normalize to the bare suffix so we never emit
  * `ossdk.ossdk.*`.
  *
- * Trim first so a leading space cannot keep `removePrefix` from matching
- * (`" ossdk.kotlin_version"` would otherwise bypass reserved-key checks and
- * emit `ossdk.ossdk.kotlin_version`).
+ * Strips repeatedly, trimming between passes, so neither padding nor extra
+ * prefixes can hide a reserved suffix from [RESERVED_TOP_LEVEL_OSSDK_SUFFIXES]:
+ * that lookup holds bare suffixes, so it only catches everything if
+ * normalization is idempotent. `" ossdk. ossdk.kotlin_version"` and
+ * `"kotlin_version"` have to reach it as the same string.
  */
-internal fun normalizeOssdkAttributeSuffix(key: String): String =
-    key.trim().removePrefix("ossdk.").trim()
+internal fun normalizeOssdkAttributeSuffix(key: String): String {
+    var suffix = key.trim()
+    while (suffix.startsWith(OSSDK_PREFIX)) {
+        suffix = suffix.substring(OSSDK_PREFIX.length).trim()
+    }
+    return suffix
+}
 
 /**
  * Canonical top-level `ossdk.*` suffixes owned by dedicated provider fields /

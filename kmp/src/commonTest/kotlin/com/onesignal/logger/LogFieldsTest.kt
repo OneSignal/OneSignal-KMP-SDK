@@ -115,7 +115,7 @@ class LogFieldsTest {
     fun normalizeOssdkAttributeSuffixStripsPrefixRegardlessOfSurroundingWhitespace() {
         // Bare suffixes pass through untouched.
         assertEquals("java_version", normalizeOssdkAttributeSuffix("java_version"))
-        // Already-prefixed keys lose exactly one prefix.
+        // Already-prefixed keys lose the prefix.
         assertEquals("java_version", normalizeOssdkAttributeSuffix("ossdk.java_version"))
         // Whitespace must be stripped *before* the prefix check, or the prefix
         // survives and gets re-prefixed into `ossdk.ossdk.*`.
@@ -126,6 +126,23 @@ class LogFieldsTest {
         // Whitespace-only and prefix-only keys normalize to empty so callers drop them.
         assertEquals("", normalizeOssdkAttributeSuffix("   "))
         assertEquals("", normalizeOssdkAttributeSuffix("  ossdk.  "))
+    }
+
+    @Test
+    fun normalizeOssdkAttributeSuffixStripsRepeatedPrefixes() {
+        // Stripping only once leaves `ossdk.kotlin_version`, which is not what
+        // RESERVED_TOP_LEVEL_OSSDK_SUFFIXES holds, so the reserved suffix slips
+        // through and is re-prefixed into `ossdk.ossdk.kotlin_version`.
+        assertEquals("kotlin_version", normalizeOssdkAttributeSuffix("ossdk.ossdk.kotlin_version"))
+        assertEquals("java_version", normalizeOssdkAttributeSuffix("ossdk.ossdk.ossdk.java_version"))
+        // Padding between the prefixes must not stop the collapse either.
+        assertEquals("kmp_version", normalizeOssdkAttributeSuffix("  ossdk. ossdk.kmp_version "))
+        // Prefix-only keys still normalize to empty so callers drop them.
+        assertEquals("", normalizeOssdkAttributeSuffix("ossdk.ossdk."))
+        // The property the reserved lookup depends on: normalizing twice is the
+        // same as normalizing once.
+        val once = normalizeOssdkAttributeSuffix("ossdk.ossdk.kotlin_version")
+        assertEquals(once, normalizeOssdkAttributeSuffix(once))
     }
 
     @Test
@@ -172,6 +189,31 @@ class LogFieldsTest {
         assertFalse(attrs.containsKey("ossdk.ossdk.kmp_version"))
         // A non-reserved extra with the same padding still lands correctly.
         assertEquals("26.1", attrs["ossdk.ndk_version"])
+    }
+
+    @Test
+    fun topLevelRejectsReservedKeysHiddenBehindRepeatedPrefixes() = runTest {
+        val provider =
+            FakePlatformProvider(
+                additionalVersionAttributes =
+                mapOf(
+                    "ossdk.ossdk.kotlin_version" to "forged-kotlin",
+                    "ossdk.ossdk.install_id" to "forged-install",
+                    " ossdk. ossdk.kmp_version " to "forged-kmp",
+                    "ossdk.ossdk.ndk_version" to "26.1",
+                ),
+            )
+        val attrs = LogFieldsTopLevel(provider).getAttributes()
+
+        assertFalse(attrs.containsKey("ossdk.ossdk.kotlin_version"))
+        assertFalse(attrs.containsKey("ossdk.kotlin_version"))
+        assertFalse(attrs.containsKey("ossdk.ossdk.install_id"))
+        assertEquals("install-abc", attrs["ossdk.install_id"])
+        assertFalse(attrs.containsKey("ossdk.ossdk.kmp_version"))
+        assertTrue(attrs["ossdk.kmp_version"] != "forged-kmp")
+        // A non-reserved extra collapses to the key the host plainly meant.
+        assertEquals("26.1", attrs["ossdk.ndk_version"])
+        assertFalse(attrs.containsKey("ossdk.ossdk.ndk_version"))
     }
 
     @Test
