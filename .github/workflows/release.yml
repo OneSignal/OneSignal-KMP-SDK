@@ -35,7 +35,7 @@ concurrency:
 jobs:
   # --- Gate: the exact checks CI runs, so we only ever tag green code. ---
   verify:
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: "[Checkout] Repo"
         uses: actions/checkout@v7

@@ -20,7 +20,7 @@ jobs:
   verify:
     name: JVM/Android + iOS simulator + XCFramework
     # macOS runner so the Kotlin/Native iOS simulator tests can run.
-    runs-on: macos-14
+    runs-on: macos-latest
     steps:
       - name: "[Checkout] Repo"
         uses: actions/checkout@v7

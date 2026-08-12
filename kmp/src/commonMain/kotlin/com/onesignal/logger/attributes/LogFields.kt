@@ -11,6 +11,58 @@ internal fun <K, V> MutableMap<K, V>.putIfValueNotNull(key: K, value: V?): Mutab
     return this
 }
 
+/** Like [putIfValueNotNull], but also skips blank strings so filter attrs stay sparse. */
+internal fun MutableMap<String, String>.putIfValueNotBlank(
+    key: String,
+    value: String?,
+): MutableMap<String, String> {
+    if (!value.isNullOrBlank()) {
+        this[key] = value
+    }
+    return this
+}
+
+private const val OSSDK_PREFIX = "ossdk."
+
+/**
+ * Hosts may pass bare suffixes (`java_version`) or accidentally include the
+ * `ossdk.` prefix; normalize to the bare suffix so we never emit
+ * `ossdk.ossdk.*`.
+ *
+ * Strips repeatedly, trimming between passes, so neither padding nor extra
+ * prefixes can hide a reserved suffix from [RESERVED_TOP_LEVEL_OSSDK_SUFFIXES]:
+ * that lookup holds bare suffixes, so it only catches everything if
+ * normalization is idempotent. `" ossdk. ossdk.kotlin_version"` and
+ * `"kotlin_version"` have to reach it as the same string.
+ */
+internal fun normalizeOssdkAttributeSuffix(key: String): String {
+    var suffix = key.trim()
+    while (suffix.startsWith(OSSDK_PREFIX)) {
+        suffix = suffix.substring(OSSDK_PREFIX.length).trim()
+    }
+    return suffix
+}
+
+/**
+ * Canonical top-level `ossdk.*` suffixes owned by dedicated provider fields /
+ * core resource attrs. Entries in [ILoggerPlatformProvider.additionalVersionAttributes]
+ * that normalize to one of these are dropped entirely — even when the dedicated
+ * value is null — so extras cannot populate reserved labels.
+ */
+internal val RESERVED_TOP_LEVEL_OSSDK_SUFFIXES: Set<String> =
+    setOf(
+        "install_id",
+        "sdk_base",
+        "sdk_base_version",
+        "kmp_version",
+        "app_package_id",
+        "app_version",
+        "sdk_wrapper",
+        "sdk_wrapper_version",
+        "kotlin_version",
+        "swift_version",
+    )
+
 /**
  * Top-level / resource attributes. Included on every export and, per OTLP, attached
  * to the `resource` rather than each record. Only values that cannot change during
@@ -21,6 +73,10 @@ internal fun <K, V> MutableMap<K, V>.putIfValueNotNull(key: K, value: V?): Mutab
  * features later). Because it is republished under the host SDK version, that
  * attribute is the only thing on the wire that ties a record back to the exact
  * KMP source that produced it.
+ *
+ * Optional host language / toolchain versions (`ossdk.kotlin_version`,
+ * `ossdk.swift_version`, plus any `additionalVersionAttributes`) ride along so
+ * dashboards can filter by the app's language stack.
  */
 internal class LogFieldsTopLevel(
     private val platformProvider: ILoggerPlatformProvider,
@@ -44,6 +100,19 @@ internal class LogFieldsTopLevel(
         attributes
             .putIfValueNotNull("ossdk.sdk_wrapper", platformProvider.sdkWrapper)
             .putIfValueNotNull("ossdk.sdk_wrapper_version", platformProvider.sdkWrapperVersion)
+            .putIfValueNotBlank("ossdk.kotlin_version", platformProvider.kotlinVersion)
+            .putIfValueNotBlank("ossdk.swift_version", platformProvider.swiftVersion)
+
+        for ((key, value) in platformProvider.additionalVersionAttributes) {
+            val suffix = normalizeOssdkAttributeSuffix(key)
+            if (suffix.isEmpty() ||
+                suffix in RESERVED_TOP_LEVEL_OSSDK_SUFFIXES ||
+                value.isNullOrBlank()
+            ) {
+                continue
+            }
+            attributes["ossdk.$suffix"] = value
+        }
 
         return attributes.toMap()
     }

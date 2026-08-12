@@ -2,6 +2,7 @@ package com.onesignal.logger
 
 import com.onesignal.logger.attributes.LogFieldsPerEvent
 import com.onesignal.logger.attributes.LogFieldsTopLevel
+import com.onesignal.logger.attributes.normalizeOssdkAttributeSuffix
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -21,6 +22,198 @@ class LogFieldsTest {
         // Build-stamped KMP provenance always rides along in the resource header.
         // Value is git-describe derived (non-deterministic), so only assert presence.
         assertTrue(attrs["ossdk.kmp_version"]?.isNotEmpty() == true)
+        // Language versions are opt-in; absent when the host does not supply them.
+        assertFalse(attrs.containsKey("ossdk.kotlin_version"))
+        assertFalse(attrs.containsKey("ossdk.swift_version"))
+    }
+
+    @Test
+    fun topLevelIncludesKotlinAndSwiftVersionsWhenProvided() = runTest {
+        val provider =
+            FakePlatformProvider(
+                kotlinVersion = "2.0.21",
+                swiftVersion = "5.10",
+            )
+        val attrs = LogFieldsTopLevel(provider).getAttributes()
+
+        assertEquals("2.0.21", attrs["ossdk.kotlin_version"])
+        assertEquals("5.10", attrs["ossdk.swift_version"])
+    }
+
+    @Test
+    fun topLevelOmitsBlankLanguageVersions() = runTest {
+        val provider =
+            FakePlatformProvider(
+                kotlinVersion = "   ",
+                swiftVersion = "",
+            )
+        val attrs = LogFieldsTopLevel(provider).getAttributes()
+
+        assertFalse(attrs.containsKey("ossdk.kotlin_version"))
+        assertFalse(attrs.containsKey("ossdk.swift_version"))
+    }
+
+    @Test
+    fun topLevelMergesAdditionalVersionAttributesUnderOssdkPrefix() = runTest {
+        val provider =
+            FakePlatformProvider(
+                kotlinVersion = "2.1.0",
+                swiftVersion = "6.0",
+                additionalVersionAttributes =
+                mapOf(
+                    "java_version" to "17",
+                    "xcode_version" to "16.2",
+                    // Accidental ossdk. prefix is stripped (no double prefix).
+                    "ossdk.ndk_version" to "26.1",
+                    // Blank extras are omitted.
+                    "agp_version" to "  ",
+                ),
+            )
+        val attrs = LogFieldsTopLevel(provider).getAttributes()
+
+        assertEquals("17", attrs["ossdk.java_version"])
+        assertEquals("16.2", attrs["ossdk.xcode_version"])
+        assertEquals("26.1", attrs["ossdk.ndk_version"])
+        assertEquals("2.1.0", attrs["ossdk.kotlin_version"])
+        assertEquals("6.0", attrs["ossdk.swift_version"])
+        assertFalse(attrs.containsKey("ossdk.ossdk.ndk_version"))
+        assertFalse(attrs.containsKey("ossdk.agp_version"))
+    }
+
+    @Test
+    fun topLevelRejectsReservedAdditionalVersionAttributeKeys() = runTest {
+        // Dedicated language versions intentionally null — reserved extras must
+        // still be dropped, not fill the canonical keys.
+        val provider =
+            FakePlatformProvider(
+                additionalVersionAttributes =
+                mapOf(
+                    "kotlin_version" to "from-extras",
+                    "swift_version" to "from-extras",
+                    "install_id" to "forged-install",
+                    "kmp_version" to "forged-kmp",
+                    "sdk_wrapper" to "forged-wrapper",
+                    // Leading whitespace must not keep removePrefix from matching,
+                    // or the reserved key slips through as ossdk.ossdk.kotlin_version.
+                    " ossdk.kotlin_version" to "spaced-reserved",
+                    "java_version" to "17",
+                ),
+            )
+        val attrs = LogFieldsTopLevel(provider).getAttributes()
+
+        assertFalse(attrs.containsKey("ossdk.kotlin_version"))
+        assertFalse(attrs.containsKey("ossdk.swift_version"))
+        assertFalse(attrs.containsKey("ossdk.sdk_wrapper"))
+        assertFalse(attrs.containsKey("ossdk.ossdk.kotlin_version"))
+        assertEquals("install-abc", attrs["ossdk.install_id"])
+        assertTrue(attrs["ossdk.kmp_version"]?.isNotEmpty() == true)
+        assertTrue(attrs["ossdk.kmp_version"] != "forged-kmp")
+        assertEquals("17", attrs["ossdk.java_version"])
+    }
+
+    @Test
+    fun normalizeOssdkAttributeSuffixStripsPrefixRegardlessOfSurroundingWhitespace() {
+        // Bare suffixes pass through untouched.
+        assertEquals("java_version", normalizeOssdkAttributeSuffix("java_version"))
+        // Already-prefixed keys lose the prefix.
+        assertEquals("java_version", normalizeOssdkAttributeSuffix("ossdk.java_version"))
+        // Whitespace must be stripped *before* the prefix check, or the prefix
+        // survives and gets re-prefixed into `ossdk.ossdk.*`.
+        assertEquals("java_version", normalizeOssdkAttributeSuffix("  ossdk.java_version"))
+        assertEquals("java_version", normalizeOssdkAttributeSuffix("ossdk.java_version  "))
+        assertEquals("java_version", normalizeOssdkAttributeSuffix("\tossdk.java_version\n"))
+        assertEquals("java_version", normalizeOssdkAttributeSuffix("  java_version  "))
+        // Whitespace-only and prefix-only keys normalize to empty so callers drop them.
+        assertEquals("", normalizeOssdkAttributeSuffix("   "))
+        assertEquals("", normalizeOssdkAttributeSuffix("  ossdk.  "))
+    }
+
+    @Test
+    fun normalizeOssdkAttributeSuffixStripsRepeatedPrefixes() {
+        // Stripping only once leaves `ossdk.kotlin_version`, which is not what
+        // RESERVED_TOP_LEVEL_OSSDK_SUFFIXES holds, so the reserved suffix slips
+        // through and is re-prefixed into `ossdk.ossdk.kotlin_version`.
+        assertEquals("kotlin_version", normalizeOssdkAttributeSuffix("ossdk.ossdk.kotlin_version"))
+        assertEquals("java_version", normalizeOssdkAttributeSuffix("ossdk.ossdk.ossdk.java_version"))
+        // Padding between the prefixes must not stop the collapse either.
+        assertEquals("kmp_version", normalizeOssdkAttributeSuffix("  ossdk. ossdk.kmp_version "))
+        // Prefix-only keys still normalize to empty so callers drop them.
+        assertEquals("", normalizeOssdkAttributeSuffix("ossdk.ossdk."))
+        // The property the reserved lookup depends on: normalizing twice is the
+        // same as normalizing once.
+        val once = normalizeOssdkAttributeSuffix("ossdk.ossdk.kotlin_version")
+        assertEquals(once, normalizeOssdkAttributeSuffix(once))
+    }
+
+    @Test
+    fun topLevelNormalizesWhitespacePaddedAdditionalVersionAttributeKeys() = runTest {
+        val provider =
+            FakePlatformProvider(
+                additionalVersionAttributes =
+                mapOf(
+                    "  ossdk.ndk_version  " to "26.1",
+                    "ossdk.xcode_version  " to "16.2",
+                    "  java_version" to "17",
+                ),
+            )
+        val attrs = LogFieldsTopLevel(provider).getAttributes()
+
+        assertEquals("26.1", attrs["ossdk.ndk_version"])
+        assertEquals("16.2", attrs["ossdk.xcode_version"])
+        assertEquals("17", attrs["ossdk.java_version"])
+        assertFalse(attrs.containsKey("ossdk.ossdk.ndk_version"))
+        assertFalse(attrs.containsKey("ossdk.ossdk.xcode_version"))
+    }
+
+    @Test
+    fun topLevelRejectsReservedKeysHiddenBehindWhitespaceAndPrefix() = runTest {
+        // Padding + an explicit `ossdk.` prefix must not smuggle a reserved
+        // suffix past RESERVED_TOP_LEVEL_OSSDK_SUFFIXES.
+        val provider =
+            FakePlatformProvider(
+                additionalVersionAttributes =
+                mapOf(
+                    " ossdk.install_id" to "forged-install",
+                    "  ossdk.kotlin_version  " to "forged-kotlin",
+                    "ossdk.kmp_version " to "forged-kmp",
+                    "  ossdk.ndk_version" to "26.1",
+                ),
+            )
+        val attrs = LogFieldsTopLevel(provider).getAttributes()
+
+        assertEquals("install-abc", attrs["ossdk.install_id"])
+        assertFalse(attrs.containsKey("ossdk.ossdk.install_id"))
+        assertFalse(attrs.containsKey("ossdk.kotlin_version"))
+        assertFalse(attrs.containsKey("ossdk.ossdk.kotlin_version"))
+        assertTrue(attrs["ossdk.kmp_version"] != "forged-kmp")
+        assertFalse(attrs.containsKey("ossdk.ossdk.kmp_version"))
+        // A non-reserved extra with the same padding still lands correctly.
+        assertEquals("26.1", attrs["ossdk.ndk_version"])
+    }
+
+    @Test
+    fun topLevelRejectsReservedKeysHiddenBehindRepeatedPrefixes() = runTest {
+        val provider =
+            FakePlatformProvider(
+                additionalVersionAttributes =
+                mapOf(
+                    "ossdk.ossdk.kotlin_version" to "forged-kotlin",
+                    "ossdk.ossdk.install_id" to "forged-install",
+                    " ossdk. ossdk.kmp_version " to "forged-kmp",
+                    "ossdk.ossdk.ndk_version" to "26.1",
+                ),
+            )
+        val attrs = LogFieldsTopLevel(provider).getAttributes()
+
+        assertFalse(attrs.containsKey("ossdk.ossdk.kotlin_version"))
+        assertFalse(attrs.containsKey("ossdk.kotlin_version"))
+        assertFalse(attrs.containsKey("ossdk.ossdk.install_id"))
+        assertEquals("install-abc", attrs["ossdk.install_id"])
+        assertFalse(attrs.containsKey("ossdk.ossdk.kmp_version"))
+        assertTrue(attrs["ossdk.kmp_version"] != "forged-kmp")
+        // A non-reserved extra collapses to the key the host plainly meant.
+        assertEquals("26.1", attrs["ossdk.ndk_version"])
+        assertFalse(attrs.containsKey("ossdk.ossdk.ndk_version"))
     }
 
     @Test
