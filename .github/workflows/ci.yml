@@ -60,6 +60,13 @@ jobs:
           import OneSignalKMP
           let factory: LoggerFactory = LoggerFactory.shared
           EOF
+          xcrun --sdk macosx swiftc \
+            -target arm64-apple-ios14.0-macabi \
+            -F kmp/build/XCFrameworks/release/OneSignalKMP.xcframework/ios-arm64_x86_64-maccatalyst \
+            -typecheck - <<'EOF'
+          import OneSignalKMP
+          let factory: LoggerFactory = LoggerFactory.shared
+          EOF
 
       - name: "[Package] CocoaPods lint"
         run: pod lib lint OneSignalKMP.podspec --allow-warnings --skip-import-validation
