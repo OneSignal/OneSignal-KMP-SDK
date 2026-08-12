@@ -262,13 +262,15 @@ ext {
 if (publishSharedKmp) {
     pluginManager.apply('com.vanniktech.maven.publish')
 
-    // Refuse to publish an artifact whose provenance is not a KMP version tag
-    // (or a clean describe rooted at one). Escape hatch for local experiments:
-    // -PALLOW_UNTAGGED_LOGGER_KMP=true
+    // Refuse to publish an artifact whose provenance is not exactly a KMP
+    // version tag. Escape hatch for local experiments:
+    // -PALLOW_UNTAGGED_LOGGER_KMP=true (the value must be truthy; merely
+    // declaring the property is not enough).
     def verifyLoggerKmpProvenance = tasks.register('verifyLoggerKmpProvenance') {
         dependsOn generateLoggerBuildInfo
         doLast {
-            if (rootProject.hasProperty('ALLOW_UNTAGGED_LOGGER_KMP')) {
+            if (rootProject.hasProperty('ALLOW_UNTAGGED_LOGGER_KMP') &&
+                    rootProject.property('ALLOW_UNTAGGED_LOGGER_KMP').toString().toBoolean()) {
                 logger.warn("ALLOW_UNTAGGED_LOGGER_KMP set — skipping KMP provenance check (stamped=${project.ext.loggerKmpVersion})")
                 return
             }
@@ -279,8 +281,10 @@ if (publishSharedKmp) {
                                 "Pin the OneSignal-KMP-SDK submodule to a clean tagged commit (vX.Y.Z). " +
                                 "For local experiments only: -PALLOW_UNTAGGED_LOGGER_KMP=true")
             }
-            // git describe --tags yields `v1.2.3` or `v1.2.3-N-gSHA` when a tag exists.
-            if (!(version ==~ /^v\d+\.\d+.*/)) {
+            // Require a bare release tag. `git describe --tags` appends `-N-gSHA`
+            // when the checkout is N commits past the nearest tag, so anchoring
+            // both ends is what distinguishes `v1.2.3` from `v1.2.3-6-gabc1234`.
+            if (!(version ==~ /^v\d+\.\d+\.\d+$/)) {
                 throw new GradleException(
                         "Refusing to publish com.onesignal:kmp without a KMP version tag " +
                                 "(got '${version}'). Tag OneSignal-KMP-SDK (vX.Y.Z) and pin the submodule to it. " +
