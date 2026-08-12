@@ -21,10 +21,25 @@ the internal OneSignal Android and iOS SDK teams.
 
 ## Targets
 
-`androidTarget`, `iosX64`, `iosArm64`, `iosSimulatorArm64`.
+`androidTarget`, `iosX64`, `iosArm64`, `iosSimulatorArm64`, and Mac Catalyst
+framework binaries for arm64 and x86_64.
 
 The iOS targets are packaged as one static `OneSignalKMP.xcframework`. It contains
-an `ios-arm64` device slice and an `ios-arm64_x86_64-simulator` slice.
+an `ios-arm64` device slice, an `ios-arm64_x86_64-simulator` slice, and an
+`ios-arm64_x86_64-maccatalyst` slice.
+
+Kotlin 2.3 defaults Apple binaries to iOS 14. The iOS device and simulator binaries
+retain the existing iOS 11 contract through Kotlin/Native minimum-version overrides,
+and the verification task checks the resulting Mach-O values on every build. The
+arm64 simulator slice remains at iOS 14 because that simulator architecture was
+introduced with iOS 14; the device and x86_64 simulator slices retain iOS 11.
+Catalyst uses the supported iOS 14 minimum. The macabi bridge is experimental
+Kotlin/Native functionality; its x86_64 binary depends on the tier-3 `iosX64` target
+and must be revisited before adopting a Kotlin version that removes that target.
+
+The standalone build uses Kotlin 2.3 for Apple packaging. Android hosts continue to
+provide their own Kotlin plugin version when including this repository as a subproject;
+shared sources and coroutines 1.7.3 remain compatible with the current Android host.
 
 ## Build & test
 
@@ -60,7 +75,8 @@ package:
 ```
 
 The package product and Swift module are both named `OneSignalKMP`. `Package.swift`
-points to the generated framework under `kmp/build/XCFrameworks/release`.
+points to the generated framework under `kmp/build/XCFrameworks/release` and declares
+iOS 11 plus Mac Catalyst 14 support.
 
 ### CocoaPods
 
@@ -74,8 +90,9 @@ pod 'OneSignalKMP', path: '../OneSignal-KMP-SDK'
 `prepare_command` builds the artifact for downloaded/tagged pods; CocoaPods does not
 guarantee that command runs for a local `path` pod, so local consumers must run the
 Gradle assembly command first. The checked-in podspec defaults to `0.1.1` solely for
-local validation and is not version-synchronized by the Release workflow. Publishing
-versioned podspecs backed by each GitHub Release XCFramework is deferred.
+local validation and configures Catalyst targets for an iOS 14 minimum. It is not
+version-synchronized by the Release workflow. Publishing versioned podspecs backed by
+each GitHub Release XCFramework is deferred.
 
 To release Android and iOS in lockstep: tag this repo, then bump the submodule pointer
 to that tag in both SDK repos.

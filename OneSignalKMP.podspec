@@ -13,5 +13,9 @@ Pod::Spec.new do |spec|
   spec.ios.deployment_target = '11.0'
   spec.static_framework = true
   spec.vendored_frameworks = 'kmp/build/XCFrameworks/release/OneSignalKMP.xcframework'
+  spec.pod_target_xcconfig = {
+    'SUPPORTS_MACCATALYST' => 'YES',
+    'IPHONEOS_DEPLOYMENT_TARGET[sdk=macosx*]' => '14.0',
+  }
   spec.prepare_command = './gradlew :kmp:verifyOneSignalKMPXCFramework --console=plain'
 end
