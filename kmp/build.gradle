@@ -2,6 +2,7 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFrameworkConfig
 
 plugins {
     id 'org.jetbrains.kotlin.multiplatform'
+    id 'org.jetbrains.kotlin.plugin.serialization'
     id 'com.android.library'
     id 'com.diffplug.spotless'
 }
@@ -9,10 +10,10 @@ plugins {
 // Kotlin Multiplatform ":kmp" module — OneSignal's shared multiplatform code.
 //
 // One umbrella module (published as `com.onesignal:kmp`) that hosts all shared,
-// platform-agnostic Kotlin. Today it contains the logger (package
-// `com.onesignal.logger`); future shared features (e.g. `common`, `notifications`)
-// land as sibling packages inside this same module rather than new Gradle modules,
-// so the iOS side only ever links a single framework.
+// platform-agnostic Kotlin. Today it contains the logger (`com.onesignal.logger`)
+// and Turbine feature-flags client (`com.onesignal.features`); more shared
+// packages land as siblings here rather than new Gradle modules, so the iOS
+// side only ever links a single framework.
 //
 // The logger is the platform-agnostic, OpenTelemetry-free replacement for the
 // `otel` module. ALL logic lives in `commonMain` (pure Kotlin, no Android or
@@ -150,6 +151,7 @@ kotlin {
             kotlin.srcDir(generateLoggerBuildInfo)
             dependencies {
                 implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion"
+                implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:$kotlinxSerializationJsonVersion"
             }
         }
         commonTest {
@@ -186,7 +188,8 @@ if (!publishSharedKmp) {
             }
 
             def headerText = header.text
-            ['LoggerFactory', 'ILogger', 'ILoggerPlatformProvider', 'ILogHttpSender', 'ILogFileStore'].each { publicType ->
+            ['LoggerFactory', 'ILogger', 'ILoggerPlatformProvider', 'ILogHttpSender', 'ILogFileStore',
+             'FeatureFlagsClient', 'IFeatureFlagsHttp'].each { publicType ->
                 if (!headerText.contains("swift_name(\"${publicType}\")")) {
                     throw new GradleException("Generated Objective-C header does not expose ${publicType}")
                 }
