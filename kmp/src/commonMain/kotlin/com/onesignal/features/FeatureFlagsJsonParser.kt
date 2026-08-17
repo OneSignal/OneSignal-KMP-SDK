@@ -55,7 +55,7 @@ object FeatureFlagsJsonParser {
                     ?.content
                     ?.trim()
                     ?.takeIf { it.isNotEmpty() }
-                    ?.let { raw -> raw to canonicalFeatureFlagId(raw) }
+                    ?.let { raw -> raw to canonicalizeFeatureFlagId(raw) }
             }.distinctBy { it.second }
 
         if (flagEntries.isEmpty()) {
@@ -102,13 +102,6 @@ object FeatureFlagsJsonParser {
         }
         return null
     }
-
-    private fun canonicalFeatureFlagId(raw: String): String =
-        buildString(raw.length) {
-            for (c in raw) {
-                append(c.lowercaseChar())
-            }
-        }
 
     fun encodeMetadata(metadata: JsonObject?): String? =
         metadata?.let { format.encodeToString(JsonElement.serializer(), it) }

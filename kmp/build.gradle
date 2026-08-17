@@ -11,7 +11,7 @@ plugins {
 //
 // One umbrella module (published as `com.onesignal:kmp`) that hosts all shared,
 // platform-agnostic Kotlin. Today it contains the logger (`com.onesignal.logger`)
-// and Turbine feature-flags client (`com.onesignal.features`); more shared
+// and Turbine feature-flags client + catalog (`com.onesignal.features`); more shared
 // packages land as siblings here rather than new Gradle modules, so the iOS
 // side only ever links a single framework.
 //
@@ -189,7 +189,7 @@ if (!publishSharedKmp) {
 
             def headerText = header.text
             ['LoggerFactory', 'ILogger', 'ILoggerPlatformProvider', 'ILogHttpSender', 'ILogFileStore',
-             'FeatureFlagsClient', 'IFeatureFlagsHttp'].each { publicType ->
+             'FeatureFlagsClient', 'IFeatureFlagsHttp', 'FeatureManager', 'FeatureFlag'].each { publicType ->
                 if (!headerText.contains("swift_name(\"${publicType}\")")) {
                     throw new GradleException("Generated Objective-C header does not expose ${publicType}")
                 }
