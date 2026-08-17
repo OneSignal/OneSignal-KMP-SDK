@@ -85,8 +85,36 @@ class FeatureManagerTest {
         )
         assertTrue(manager.isEnabled(FeatureFlag.SDK_CUSTOM_LOGGING))
 
-        manager.refresh(emptyList(), applyAppStartupFlags = false)
+        val deferred = manager.refresh(emptyList(), applyAppStartupFlags = false)
         assertTrue(manager.isEnabled(FeatureFlag.SDK_CUSTOM_LOGGING))
+        assertEquals(1, deferred.size)
+        assertEquals(FeatureFlag.SDK_CUSTOM_LOGGING.key, deferred[0].key)
+        assertFalse(deferred[0].desiredEnabled)
+        assertTrue(deferred[0].latchedEnabled)
+    }
+
+    @Test
+    fun processStartRefreshDoesNotReportDeferred() {
+        val manager = FeatureManager()
+        val deferred =
+            manager.refresh(
+                listOf(FeatureFlag.SDK_CUSTOM_LOGGING.key),
+                applyAppStartupFlags = true,
+            )
+        assertEquals(emptyList(), deferred)
+    }
+
+    @Test
+    fun immediateFlagFlipIsNotDeferred() {
+        val manager = FeatureManager()
+        manager.refresh(emptyList(), applyAppStartupFlags = true)
+        val deferred =
+            manager.refresh(
+                listOf(FeatureFlag.SDK_IDENTITY_VERIFICATION.key),
+                applyAppStartupFlags = false,
+            )
+        assertEquals(emptyList(), deferred)
+        assertTrue(manager.isEnabled(FeatureFlag.SDK_IDENTITY_VERIFICATION))
     }
 
     @Test

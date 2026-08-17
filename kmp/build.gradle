@@ -189,7 +189,8 @@ if (!publishSharedKmp) {
 
             def headerText = header.text
             ['LoggerFactory', 'ILogger', 'ILoggerPlatformProvider', 'ILogHttpSender', 'ILogFileStore',
-             'FeatureFlagsClient', 'IFeatureFlagsHttp', 'FeatureManager', 'FeatureFlag'].each { publicType ->
+             'FeatureFlagsClient', 'IFeatureFlagsHttp', 'FeatureManager', 'FeatureFlag',
+             'DeferredFeatureActivation'].each { publicType ->
                 if (!headerText.contains("swift_name(\"${publicType}\")")) {
                     throw new GradleException("Generated Objective-C header does not expose ${publicType}")
                 }

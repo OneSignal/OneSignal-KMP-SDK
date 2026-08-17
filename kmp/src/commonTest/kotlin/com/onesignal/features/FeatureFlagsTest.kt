@@ -173,6 +173,31 @@ class FeatureFlagsClientTest {
         }
 
     @Test
+    fun unavailableIsClientErrorMatchesHttpResponse() {
+        val forbidden =
+            RemoteFeatureFlagsFetchOutcome.Unavailable(
+                reason = RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.NON_SUCCESS_HTTP,
+                statusCode = 403,
+            )
+        assertTrue(forbidden.isClientError)
+        assertTrue(FeatureFlagsHttpResponse(403, null).isClientError)
+
+        val serverError =
+            RemoteFeatureFlagsFetchOutcome.Unavailable(
+                reason = RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.NON_SUCCESS_HTTP,
+                statusCode = 500,
+            )
+        assertTrue(!serverError.isClientError)
+        assertTrue(!FeatureFlagsHttpResponse(500, null).isClientError)
+
+        val noStatus =
+            RemoteFeatureFlagsFetchOutcome.Unavailable(
+                reason = RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.INVALID_SDK_VERSION,
+            )
+        assertTrue(!noStatus.isClientError)
+    }
+
+    @Test
     fun clientErrorReturnsUnavailableWithSnippet() =
         runTest {
             val client =
@@ -197,6 +222,7 @@ class FeatureFlagsClientTest {
             )
             assertEquals(403, unavailable.statusCode)
             assertEquals("""{"errors":["Forbidden"]}""", unavailable.bodySnippet)
+            assertTrue(unavailable.isClientError)
         }
 
     @Test

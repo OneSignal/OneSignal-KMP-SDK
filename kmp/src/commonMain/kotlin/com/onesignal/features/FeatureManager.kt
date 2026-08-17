@@ -1,6 +1,19 @@
 package com.onesignal.features
 
 /**
+ * A latched [FeatureActivationMode.APP_STARTUP] flag whose remote value changed but was
+ * not applied because it is already latched for this process.
+ *
+ * Hosts should log these at INFO so a mid-session Turbine flip is visible even
+ * though [FeatureManager.isEnabled] keeps the latched value until the next run.
+ */
+data class DeferredFeatureActivation(
+    val key: String,
+    val desiredEnabled: Boolean,
+    val latchedEnabled: Boolean,
+)
+
+/**
  * In-process latch for [FeatureFlag] state.
  *
  * Hosts pass the latest trusted remote keys (from cache at process start, then
@@ -9,7 +22,7 @@ package com.onesignal.features
  *
  * Call [refresh] with [applyAppStartupFlags] `true` once at process start, then
  * `false` for later updates so [FeatureActivationMode.APP_STARTUP] flags do not
- * flip mid-run.
+ * flip mid-run. [refresh] returns any APP_STARTUP changes that were held.
  */
 class FeatureManager {
     private var featureStates: Map<FeatureFlag, Boolean> = emptyMap()
@@ -30,26 +43,27 @@ class FeatureManager {
     fun refresh(
         remoteKeys: List<String>,
         applyAppStartupFlags: Boolean,
-    ) {
-        refresh(remoteKeys, applyAppStartupFlags, emptyList())
-    }
+    ): List<DeferredFeatureActivation> = refresh(remoteKeys, applyAppStartupFlags, emptyList())
 
     /**
      * @param remoteKeys Keys from the last trusted fetch or cache.
      * @param applyAppStartupFlags `true` on first load this process; `false` on later updates.
      * @param localOverrides Extra keys treated as enabled (test/debug only).
+     * @return APP_STARTUP flags whose remote desired value differed from the
+     * latched run value and were therefore not applied.
      */
     fun refresh(
         remoteKeys: List<String>,
         applyAppStartupFlags: Boolean,
         localOverrides: List<String>,
-    ) {
+    ): List<DeferredFeatureActivation> {
         val enabledKeys =
             (remoteKeys.asSequence() + localOverrides.asSequence())
                 .map { canonicalizeFeatureFlagId(it) }
                 .toSet()
 
         val nextStates = featureStates.toMutableMap()
+        val deferred = mutableListOf<DeferredFeatureActivation>()
         for (feature in FeatureFlag.entries) {
             val desired = feature.isEnabledIn(enabledKeys)
             when (feature.activationMode) {
@@ -60,10 +74,22 @@ class FeatureManager {
                     val alreadyLatched = nextStates.containsKey(feature)
                     if (applyAppStartupFlags || !alreadyLatched) {
                         nextStates[feature] = desired
+                    } else {
+                        val latched = nextStates[feature] ?: false
+                        if (latched != desired) {
+                            deferred.add(
+                                DeferredFeatureActivation(
+                                    key = feature.key,
+                                    desiredEnabled = desired,
+                                    latchedEnabled = latched,
+                                ),
+                            )
+                        }
                     }
                 }
             }
         }
         featureStates = nextStates
+        return deferred
     }
 }

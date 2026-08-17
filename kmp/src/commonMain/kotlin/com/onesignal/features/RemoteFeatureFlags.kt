@@ -36,6 +36,17 @@ sealed class RemoteFeatureFlagsFetchOutcome {
         val statusCode: Int? = null,
         val bodySnippet: String? = null,
     ) : RemoteFeatureFlagsFetchOutcome() {
+        /**
+         * True when [statusCode] is HTTP 4xx. Hosts log these at WARN (misconfiguration)
+         * and other failures at DEBUG (transient). iOS should use this instead of
+         * re-deriving the 400–499 range.
+         */
+        val isClientError: Boolean
+            get() {
+                val code = statusCode ?: return false
+                return isHttpClientErrorStatus(code)
+            }
+
         enum class Reason {
             INVALID_SDK_VERSION,
             NON_SUCCESS_HTTP,
