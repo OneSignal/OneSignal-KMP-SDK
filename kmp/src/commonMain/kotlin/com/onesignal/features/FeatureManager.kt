@@ -23,22 +23,30 @@ data class DeferredFeatureActivation(
  * Call [refresh] with [applyAppStartupFlags] `true` once at process start, then
  * `false` for later updates so [FeatureActivationMode.APP_STARTUP] flags do not
  * flip mid-run. [refresh] returns any APP_STARTUP changes that were held.
+ *
+ * State updates are guarded by an internal lock so [isEnabled] / [refresh] /
+ * [enabledFeatureKeys] are safe across host threads.
  */
 class FeatureManager {
+    private val lock = PlatformLock()
     private var featureStates: Map<FeatureFlag, Boolean> = emptyMap()
 
-    fun isEnabled(feature: FeatureFlag): Boolean = featureStates[feature] ?: false
+    fun isEnabled(feature: FeatureFlag): Boolean =
+        lock.withLock {
+            featureStates[feature] ?: false
+        }
 
     /**
      * Canonical keys currently enabled for this process, after latching.
      * Order follows [FeatureFlag] declaration order.
      */
-    fun enabledFeatureKeys(): List<String> {
-        val snapshot = featureStates
-        return FeatureFlag.entries.mapNotNull { flag ->
-            if (snapshot[flag] == true) flag.key else null
+    fun enabledFeatureKeys(): List<String> =
+        lock.withLock {
+            val snapshot = featureStates
+            FeatureFlag.entries.mapNotNull { flag ->
+                if (snapshot[flag] == true) flag.key else null
+            }
         }
-    }
 
     fun refresh(
         remoteKeys: List<String>,
@@ -56,40 +64,41 @@ class FeatureManager {
         remoteKeys: List<String>,
         applyAppStartupFlags: Boolean,
         localOverrides: List<String>,
-    ): List<DeferredFeatureActivation> {
-        val enabledKeys =
-            (remoteKeys.asSequence() + localOverrides.asSequence())
-                .map { canonicalizeFeatureFlagId(it) }
-                .toSet()
+    ): List<DeferredFeatureActivation> =
+        lock.withLock {
+            val enabledKeys =
+                (remoteKeys.asSequence() + localOverrides.asSequence())
+                    .map { canonicalizeFeatureFlagId(it) }
+                    .toSet()
 
-        val nextStates = featureStates.toMutableMap()
-        val deferred = mutableListOf<DeferredFeatureActivation>()
-        for (feature in FeatureFlag.entries) {
-            val desired = feature.isEnabledIn(enabledKeys)
-            when (feature.activationMode) {
-                FeatureActivationMode.IMMEDIATE -> nextStates[feature] = desired
-                FeatureActivationMode.APP_STARTUP -> {
-                    // After the first refresh every catalog flag is present in
-                    // [featureStates], including those that resolved to false.
-                    val alreadyLatched = nextStates.containsKey(feature)
-                    if (applyAppStartupFlags || !alreadyLatched) {
-                        nextStates[feature] = desired
-                    } else {
-                        val latched = nextStates[feature] ?: false
-                        if (latched != desired) {
-                            deferred.add(
-                                DeferredFeatureActivation(
-                                    key = feature.key,
-                                    desiredEnabled = desired,
-                                    latchedEnabled = latched,
-                                ),
-                            )
+            val nextStates = featureStates.toMutableMap()
+            val deferred = mutableListOf<DeferredFeatureActivation>()
+            for (feature in FeatureFlag.entries) {
+                val desired = feature.isEnabledIn(enabledKeys)
+                when (feature.activationMode) {
+                    FeatureActivationMode.IMMEDIATE -> nextStates[feature] = desired
+                    FeatureActivationMode.APP_STARTUP -> {
+                        // After the first refresh every catalog flag is present in
+                        // [featureStates], including those that resolved to false.
+                        val alreadyLatched = nextStates.containsKey(feature)
+                        if (applyAppStartupFlags || !alreadyLatched) {
+                            nextStates[feature] = desired
+                        } else {
+                            val latched = nextStates[feature] ?: false
+                            if (latched != desired) {
+                                deferred.add(
+                                    DeferredFeatureActivation(
+                                        key = feature.key,
+                                        desiredEnabled = desired,
+                                        latchedEnabled = latched,
+                                    ),
+                                )
+                            }
                         }
                     }
                 }
             }
+            featureStates = nextStates
+            deferred
         }
-        featureStates = nextStates
-        return deferred
-    }
 }

@@ -21,9 +21,14 @@ class FeatureFlagsClient(
         platform: String,
         sdkVersion: String,
     ): RemoteFeatureFlagsFetchOutcome {
+        if (!TurbineSdkFeatureFlagsPath.isValidAppIdSegment(appId)) {
+            return RemoteFeatureFlagsFetchOutcome.unavailable(
+                reason = RemoteFeatureFlagsUnavailableReason.INVALID_APP_ID,
+            )
+        }
         if (!TurbineSdkFeatureFlagsPath.isValidFeaturesSdkVersionLabel(sdkVersion)) {
-            return RemoteFeatureFlagsFetchOutcome.Unavailable(
-                reason = RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.INVALID_SDK_VERSION,
+            return RemoteFeatureFlagsFetchOutcome.unavailable(
+                reason = RemoteFeatureFlagsUnavailableReason.INVALID_SDK_VERSION,
             )
         }
 
@@ -37,15 +42,15 @@ class FeatureFlagsClient(
         val response = http.get(path)
         val body = response.body
         if (!response.isSuccess) {
-            return RemoteFeatureFlagsFetchOutcome.Unavailable(
-                reason = RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.NON_SUCCESS_HTTP,
+            return RemoteFeatureFlagsFetchOutcome.unavailable(
+                reason = RemoteFeatureFlagsUnavailableReason.NON_SUCCESS_HTTP,
                 statusCode = response.statusCode,
                 bodySnippet = bodySnippet(body),
             )
         }
         if (body.isNullOrBlank()) {
-            return RemoteFeatureFlagsFetchOutcome.Unavailable(
-                reason = RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.EMPTY_BODY,
+            return RemoteFeatureFlagsFetchOutcome.unavailable(
+                reason = RemoteFeatureFlagsUnavailableReason.EMPTY_BODY,
                 statusCode = response.statusCode,
                 bodySnippet = bodySnippet(body),
             )
@@ -53,10 +58,10 @@ class FeatureFlagsClient(
 
         val parsed = FeatureFlagsJsonParser.parseSuccessful(body)
         return if (parsed != null) {
-            RemoteFeatureFlagsFetchOutcome.Success(parsed)
+            RemoteFeatureFlagsFetchOutcome.success(parsed)
         } else {
-            RemoteFeatureFlagsFetchOutcome.Unavailable(
-                reason = RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.INVALID_JSON,
+            RemoteFeatureFlagsFetchOutcome.unavailable(
+                reason = RemoteFeatureFlagsUnavailableReason.INVALID_JSON,
                 statusCode = response.statusCode,
                 bodySnippet = bodySnippet(body),
             )

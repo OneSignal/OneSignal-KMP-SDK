@@ -1,7 +1,7 @@
 package com.onesignal.features
 
 /**
- * Builds the Turbine-relative path for SDK feature flags and validates the SDK version label.
+ * Builds the Turbine-relative path for SDK feature flags and validates path segments.
  *
  * Pure Kotlin only (no `java.*` / Android APIs).
  */
@@ -15,17 +15,33 @@ object TurbineSdkFeatureFlagsPath {
     fun isValidFeaturesSdkVersionLabel(label: String): Boolean = FEATURES_SDK_VERSION_LABEL_REGEX.matches(label)
 
     /**
+     * App id path segment: non-blank after trim, and free of characters that would still be
+     * ambiguous after percent-encoding (we reject `/`, `?`, `#` so hosts cannot accidentally
+     * rewrite the path shape).
+     */
+    fun isValidAppIdSegment(appId: String): Boolean {
+        val trimmed = appId.trim()
+        if (trimmed.isEmpty()) {
+            return false
+        }
+        return trimmed.none { it == '/' || it == '?' || it == '#' }
+    }
+
+    /**
      * Path only (relative to API base), matching `apps/{app_id}/sdk/features/{platform}/{sdk_version}`.
-     * [platform] and [sdkVersion] are UTF-8 percent-encoded per RFC 3986 (unreserved bytes left as-is).
+     * [appId], [platform], and [sdkVersion] are UTF-8 percent-encoded per RFC 3986 (unreserved
+     * bytes left as-is). Callers must validate [appId] / [sdkVersion] first via
+     * [isValidAppIdSegment] / [isValidFeaturesSdkVersionLabel].
      */
     fun buildGetPath(
         appId: String,
         platform: String,
         sdkVersion: String,
     ): String {
+        val a = percentEncodePathSegmentUtf8(appId.trim())
         val p = percentEncodePathSegmentUtf8(platform)
         val v = percentEncodePathSegmentUtf8(sdkVersion)
-        return "apps/$appId/sdk/features/$p/$v"
+        return "apps/$a/sdk/features/$p/$v"
     }
 
     /**

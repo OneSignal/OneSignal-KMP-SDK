@@ -1,10 +1,9 @@
 package com.onesignal.features
 
 import kotlinx.coroutines.test.runTest
-import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -24,7 +23,7 @@ class TurbineSdkFeatureFlagsPathTest {
     }
 
     @Test
-    fun buildGetPathMatchesTurbineRelativePath() {
+    fun buildGetPathPercentEncodesAppIdPlatformAndVersion() {
         assertEquals(
             "apps/14719551-23f1-4d20-8dab-81496ffca5ea/sdk/features/android/050801-beta",
             TurbineSdkFeatureFlagsPath.buildGetPath(
@@ -32,6 +31,27 @@ class TurbineSdkFeatureFlagsPathTest {
                 platform = "android",
                 sdkVersion = "050801-beta",
             ),
+        )
+        assertEquals(
+            "apps/app%20id/sdk/features/android/050801",
+            TurbineSdkFeatureFlagsPath.buildGetPath(
+                appId = "app id",
+                platform = "android",
+                sdkVersion = "050801",
+            ),
+        )
+    }
+
+    @Test
+    fun rejectsBlankOrPathShapingAppIds() {
+        assertFalse(TurbineSdkFeatureFlagsPath.isValidAppIdSegment(""))
+        assertFalse(TurbineSdkFeatureFlagsPath.isValidAppIdSegment("   "))
+        assertFalse(TurbineSdkFeatureFlagsPath.isValidAppIdSegment("a/b"))
+        assertFalse(TurbineSdkFeatureFlagsPath.isValidAppIdSegment("a?b"))
+        assertFalse(TurbineSdkFeatureFlagsPath.isValidAppIdSegment("a#b"))
+        assertTrue(TurbineSdkFeatureFlagsPath.isValidAppIdSegment("appId"))
+        assertTrue(
+            TurbineSdkFeatureFlagsPath.isValidAppIdSegment("14719551-23f1-4d20-8dab-81496ffca5ea"),
         )
     }
 }
@@ -50,16 +70,17 @@ class FeatureFlagsJsonParserTest {
 
         val r = FeatureFlagsJsonParser.parse(payload)
         assertEquals(listOf("feature_a", "feature_b"), r.enabledKeys)
-        val meta = requireNotNull(r.metadata)
-        assertTrue(meta.getValue("feature_a").toString().contains("weight"))
-        assertTrue(meta.getValue("feature_b").toString().contains("enabled"))
+        val metaJson = requireNotNull(r.metadataJson)
+        assertTrue(metaJson.contains("feature_a"))
+        assertTrue(metaJson.contains("weight"))
+        assertTrue(metaJson.contains("feature_b"))
     }
 
     @Test
     fun omitsMetadataWhenNoSiblingObject() {
         val r = FeatureFlagsJsonParser.parse("""{"features":["only_key"]}""")
         assertEquals(listOf("only_key"), r.enabledKeys)
-        assertNull(r.metadata)
+        assertNull(r.metadataJson)
     }
 
     @Test
@@ -74,14 +95,8 @@ class FeatureFlagsJsonParserTest {
 
         val r = FeatureFlagsJsonParser.parse(payload)
         assertEquals(listOf("sdk_background_threading"), r.enabledKeys)
-        val weight =
-            requireNotNull(r.metadata)
-                .getValue("sdk_background_threading")
-                .jsonObject
-                .getValue("weight")
-                .jsonPrimitive
-                .content
-        assertEquals("0.5", weight)
+        val map = FeatureFlagsJsonParser.parseStoredMetadataMap(r.metadataJson)
+        assertTrue(map.getValue("sdk_background_threading").contains("0.5"))
     }
 
     @Test
@@ -93,11 +108,30 @@ class FeatureFlagsJsonParserTest {
     fun emptyFeaturesArrayIsSuccessfulEmpty() {
         val r = requireNotNull(FeatureFlagsJsonParser.parseSuccessful("""{"features":[]}"""))
         assertEquals(emptyList(), r.enabledKeys)
-        assertNull(r.metadata)
+        assertNull(r.metadataJson)
     }
 
     @Test
-    fun encodeMetadataRoundTrips() {
+    fun mixedMalformedFeaturesArrayIsRejected() {
+        assertNull(
+            FeatureFlagsJsonParser.parseSuccessful(
+                """{"features":["ok", 123, "also"]}""",
+            ),
+        )
+        assertNull(
+            FeatureFlagsJsonParser.parseSuccessful(
+                """{"features":["ok", null]}""",
+            ),
+        )
+        assertNull(
+            FeatureFlagsJsonParser.parseSuccessful(
+                """{"features":["ok", ""]}""",
+            ),
+        )
+    }
+
+    @Test
+    fun metadataJsonRoundTripsThroughStoredMap() {
         val payload =
             """
             {
@@ -106,9 +140,9 @@ class FeatureFlagsJsonParserTest {
             }
             """.trimIndent()
         val r = FeatureFlagsJsonParser.parse(payload)
-        val encoded = requireNotNull(FeatureFlagsJsonParser.encodeMetadata(r.metadata))
-        val map = FeatureFlagsJsonParser.parseStoredMetadataMap(encoded)
+        val map = FeatureFlagsJsonParser.parseStoredMetadataMap(r.metadataJson)
         assertTrue(map.containsKey("feature_a"))
+        assertTrue(map.getValue("feature_a").contains("weight"))
     }
 }
 
@@ -134,11 +168,39 @@ class FeatureFlagsClientTest {
                     platform = "android",
                     sdkVersion = "5.8.1",
                 )
-            assertTrue(outcome is RemoteFeatureFlagsFetchOutcome.Unavailable)
-            val unavailable = outcome as RemoteFeatureFlagsFetchOutcome.Unavailable
+            assertTrue(outcome.isUnavailable)
             assertEquals(
-                RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.INVALID_SDK_VERSION,
-                unavailable.reason,
+                RemoteFeatureFlagsUnavailableReason.INVALID_SDK_VERSION,
+                outcome.reason,
+            )
+            assertTrue(!called)
+        }
+
+    @Test
+    fun invalidAppIdReturnsUnavailableWithoutHttp() =
+        runTest {
+            var called = false
+            val client =
+                FeatureFlagsClient(
+                    http =
+                    object : IFeatureFlagsHttp {
+                        override suspend fun get(relativePath: String): FeatureFlagsHttpResponse {
+                            called = true
+                            error("should not be called")
+                        }
+                    },
+                )
+
+            val outcome =
+                client.fetchRemoteFeatureFlags(
+                    appId = "app/../other",
+                    platform = "android",
+                    sdkVersion = "050801",
+                )
+            assertTrue(outcome.isUnavailable)
+            assertEquals(
+                RemoteFeatureFlagsUnavailableReason.INVALID_APP_ID,
+                outcome.reason,
             )
             assertTrue(!called)
         }
@@ -165,34 +227,31 @@ class FeatureFlagsClientTest {
                     platform = "android",
                     sdkVersion = "050801",
                 )
-            assertTrue(outcome is RemoteFeatureFlagsFetchOutcome.Success)
-            assertEquals(
-                emptyList(),
-                (outcome as RemoteFeatureFlagsFetchOutcome.Success).result.enabledKeys,
-            )
+            assertTrue(outcome.isSuccess)
+            assertEquals(emptyList(), requireNotNull(outcome.result).enabledKeys)
         }
 
     @Test
     fun unavailableIsClientErrorMatchesHttpResponse() {
         val forbidden =
-            RemoteFeatureFlagsFetchOutcome.Unavailable(
-                reason = RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.NON_SUCCESS_HTTP,
+            RemoteFeatureFlagsFetchOutcome.unavailable(
+                reason = RemoteFeatureFlagsUnavailableReason.NON_SUCCESS_HTTP,
                 statusCode = 403,
             )
         assertTrue(forbidden.isClientError)
         assertTrue(FeatureFlagsHttpResponse(403, null).isClientError)
 
         val serverError =
-            RemoteFeatureFlagsFetchOutcome.Unavailable(
-                reason = RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.NON_SUCCESS_HTTP,
+            RemoteFeatureFlagsFetchOutcome.unavailable(
+                reason = RemoteFeatureFlagsUnavailableReason.NON_SUCCESS_HTTP,
                 statusCode = 500,
             )
         assertTrue(!serverError.isClientError)
         assertTrue(!FeatureFlagsHttpResponse(500, null).isClientError)
 
         val noStatus =
-            RemoteFeatureFlagsFetchOutcome.Unavailable(
-                reason = RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.INVALID_SDK_VERSION,
+            RemoteFeatureFlagsFetchOutcome.unavailable(
+                reason = RemoteFeatureFlagsUnavailableReason.INVALID_SDK_VERSION,
             )
         assertTrue(!noStatus.isClientError)
     }
@@ -214,15 +273,14 @@ class FeatureFlagsClientTest {
                     platform = "android",
                     sdkVersion = "050801",
                 )
-            assertTrue(outcome is RemoteFeatureFlagsFetchOutcome.Unavailable)
-            val unavailable = outcome as RemoteFeatureFlagsFetchOutcome.Unavailable
+            assertTrue(outcome.isUnavailable)
             assertEquals(
-                RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.NON_SUCCESS_HTTP,
-                unavailable.reason,
+                RemoteFeatureFlagsUnavailableReason.NON_SUCCESS_HTTP,
+                outcome.reason,
             )
-            assertEquals(403, unavailable.statusCode)
-            assertEquals("""{"errors":["Forbidden"]}""", unavailable.bodySnippet)
-            assertTrue(unavailable.isClientError)
+            assertEquals(403, outcome.statusCode)
+            assertEquals("""{"errors":["Forbidden"]}""", outcome.bodySnippet)
+            assertTrue(outcome.isClientError)
         }
 
     @Test
@@ -242,13 +300,12 @@ class FeatureFlagsClientTest {
                     platform = "android",
                     sdkVersion = "050801",
                 )
-            assertTrue(outcome is RemoteFeatureFlagsFetchOutcome.Unavailable)
-            val unavailable = outcome as RemoteFeatureFlagsFetchOutcome.Unavailable
+            assertTrue(outcome.isUnavailable)
             assertEquals(
-                RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.EMPTY_BODY,
-                unavailable.reason,
+                RemoteFeatureFlagsUnavailableReason.EMPTY_BODY,
+                outcome.reason,
             )
-            assertEquals(200, unavailable.statusCode)
+            assertEquals(200, outcome.statusCode)
         }
 
     @Test
@@ -271,11 +328,10 @@ class FeatureFlagsClientTest {
                     platform = "ios",
                     sdkVersion = "050801",
                 )
-            assertTrue(outcome is RemoteFeatureFlagsFetchOutcome.Unavailable)
-            val unavailable = outcome as RemoteFeatureFlagsFetchOutcome.Unavailable
+            assertTrue(outcome.isUnavailable)
             assertEquals(
-                RemoteFeatureFlagsFetchOutcome.Unavailable.Reason.INVALID_JSON,
-                unavailable.reason,
+                RemoteFeatureFlagsUnavailableReason.INVALID_JSON,
+                outcome.reason,
             )
             assertEquals("apps/appId/sdk/features/ios/050801", requestedPath)
         }
