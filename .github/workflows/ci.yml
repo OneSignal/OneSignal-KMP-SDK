@@ -50,16 +50,13 @@ jobs:
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \
             build
+          xcodebuild -scheme OneSignalKMP \
+            -destination 'generic/platform=macOS,variant=Mac Catalyst' \
+            CODE_SIGNING_ALLOWED=NO \
+            build
 
       - name: "[Package] Swift import smoke test"
-        run: |
-          xcrun --sdk iphonesimulator swiftc \
-            -target arm64-apple-ios12.0-simulator \
-            -F kmp/build/XCFrameworks/release/OneSignalKMP.xcframework/ios-arm64_x86_64-simulator \
-            -typecheck - <<'EOF'
-          import OneSignalKMP
-          let factory: LoggerFactory = LoggerFactory.shared
-          EOF
+        run: scripts/smoke_test_apple_framework.sh
 
       - name: "[Package] CocoaPods lint"
         run: pod lib lint OneSignalKMP.podspec --allow-warnings --skip-import-validation

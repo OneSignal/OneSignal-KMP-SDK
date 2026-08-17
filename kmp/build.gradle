@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFrameworkConfig
+import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
 
 plugins {
     id 'org.jetbrains.kotlin.multiplatform'
@@ -129,8 +130,11 @@ kotlin {
     // `kmp-android`. The standalone KMP CI and a future iOS host (neither of
     // which sets the publish flag) still get the iOS targets they need.
     if (!publishSharedKmp) {
-        def oneSignalKmpXcFramework = new XCFrameworkConfig(project, 'OneSignalKMP')
-        [iosX64(), iosArm64(), iosSimulatorArm64()].each { target ->
+        def oneSignalKmpBaseXcFramework = new XCFrameworkConfig(project, 'OneSignalKMPBase')
+        def iosX64Target = iosX64()
+        def iosArm64Target = iosArm64()
+        def iosSimulatorArm64Target = iosSimulatorArm64()
+        [iosX64Target, iosArm64Target, iosSimulatorArm64Target].each { target ->
             target.binaries.framework {
                 baseName = 'OneSignalKMP'
                 isStatic = true
@@ -138,7 +142,19 @@ kotlin {
                         'osVersionMin.ios_arm64=11.0;' +
                         'osVersionMin.ios_simulator_arm64=11.0;' +
                         'osVersionMin.ios_x64=11.0'
-                oneSignalKmpXcFramework.add(it)
+                oneSignalKmpBaseXcFramework.add(it)
+            }
+        }
+        [iosX64Target, iosSimulatorArm64Target].each { target ->
+            target.binaries.framework('macabi', [NativeBuildType.RELEASE]) {
+                baseName = 'OneSignalKMP'
+                isStatic = true
+                freeCompilerArgs += [
+                        '-Xbinary=macabi=true',
+                        '-Xoverride-konan-properties=' +
+                                'osVersionMin.ios_simulator_arm64=14.0;' +
+                                'osVersionMin.ios_x64=14.0'
+                ]
             }
         }
     }
@@ -162,23 +178,160 @@ kotlin {
 }
 
 if (!publishSharedKmp) {
-    tasks.register('verifyOneSignalKMPXCFramework') {
-        dependsOn 'assembleOneSignalKMPReleaseXCFramework'
+    def baseXcFramework =
+            layout.buildDirectory.dir('XCFrameworks/release/OneSignalKMPBase.xcframework')
+    def finalXcFramework =
+            layout.buildDirectory.dir('XCFrameworks/release/OneSignalKMP.xcframework')
+    def catalystFrameworkOutput =
+            layout.buildDirectory.dir('XCFrameworks/release/catalyst/OneSignalKMP.framework')
+    def arm64CatalystFramework =
+            layout.buildDirectory.dir('bin/iosSimulatorArm64/macabiReleaseFramework/OneSignalKMP.framework')
+    def x64CatalystFramework =
+            layout.buildDirectory.dir('bin/iosX64/macabiReleaseFramework/OneSignalKMP.framework')
 
-        def xcframework = layout.buildDirectory.dir('XCFrameworks/release/OneSignalKMP.xcframework')
-        inputs.dir(xcframework)
+    def assembleOneSignalKMPXCFramework =
+            tasks.register('assembleOneSignalKMPReleaseXCFramework') {
+        dependsOn 'assembleOneSignalKMPBaseReleaseXCFramework'
+        dependsOn 'linkMacabiReleaseFrameworkIosSimulatorArm64'
+        dependsOn 'linkMacabiReleaseFrameworkIosX64'
+
+        inputs.dir(baseXcFramework)
+        inputs.dir(arm64CatalystFramework)
+        inputs.dir(x64CatalystFramework)
+        outputs.dir(finalXcFramework)
 
         doLast {
-            def xcframeworkDir = xcframework.get().asFile
+            def baseXcFrameworkDir = baseXcFramework.get().asFile
+            def finalXcFrameworkDir = finalXcFramework.get().asFile
+            def catalystFrameworkDir = catalystFrameworkOutput.get().asFile
+            def arm64FrameworkDir = arm64CatalystFramework.get().asFile
+            def x64FrameworkDir = x64CatalystFramework.get().asFile
+
+            delete catalystFrameworkDir.parentFile, finalXcFrameworkDir
+            copy {
+                from arm64FrameworkDir
+                into catalystFrameworkDir
+            }
+            exec {
+                commandLine 'lipo', '-create',
+                        new File(arm64FrameworkDir, 'OneSignalKMP'),
+                        new File(x64FrameworkDir, 'OneSignalKMP'),
+                        '-output', new File(catalystFrameworkDir, 'OneSignalKMP')
+            }
+            exec {
+                commandLine 'xcodebuild', '-create-xcframework',
+                        '-framework', new File(baseXcFrameworkDir, 'ios-arm64/OneSignalKMP.framework'),
+                        '-framework', new File(
+                                baseXcFrameworkDir,
+                                'ios-arm64_x86_64-simulator/OneSignalKMP.framework'),
+                        '-framework', catalystFrameworkDir,
+                        '-output', finalXcFrameworkDir
+            }
+
+            delete catalystFrameworkDir.parentFile
+        }
+    }
+
+    tasks.register('verifyOneSignalKMPXCFramework') {
+        dependsOn assembleOneSignalKMPXCFramework
+
+        inputs.dir(finalXcFramework)
+
+        doLast {
+            def xcframeworkDir = finalXcFramework.get().asFile
             def deviceFramework =
                     new File(xcframeworkDir, 'ios-arm64/OneSignalKMP.framework')
             def simulatorFramework =
                     new File(xcframeworkDir, 'ios-arm64_x86_64-simulator/OneSignalKMP.framework')
-            [deviceFramework, simulatorFramework].each { framework ->
+            def catalystFramework =
+                    new File(xcframeworkDir, 'ios-arm64_x86_64-maccatalyst/OneSignalKMP.framework')
+            [deviceFramework, simulatorFramework, catalystFramework].each { framework ->
                 if (!framework.isDirectory()) {
                     throw new GradleException("Missing XCFramework slice: ${framework}")
                 }
             }
+
+            def verificationDir =
+                    layout.buildDirectory.dir('XCFrameworks/release/platformVerification').get().asFile
+            delete verificationDir
+
+            def verifyFramework = { framework, expectedMetadata ->
+                def binary = new File(framework, 'OneSignalKMP')
+                def architecturesOutput = new ByteArrayOutputStream()
+                exec {
+                    commandLine 'lipo', '-archs', binary
+                    standardOutput = architecturesOutput
+                }
+                def actualArchitectures = architecturesOutput.toString().tokenize()
+                expectedMetadata.keySet().each { architecture ->
+                    if (!actualArchitectures.contains(architecture)) {
+                        throw new GradleException(
+                                "${framework} is missing ${architecture}: ${architecturesOutput}")
+                    }
+                }
+
+                expectedMetadata.each { architecture, expected ->
+                    def architectureDir =
+                            new File(verificationDir, "${framework.parentFile.name}-${architecture}")
+                    architectureDir.mkdirs()
+                    def archive = new File(architectureDir, 'OneSignalKMP.a')
+                    if (actualArchitectures.size() == 1) {
+                        copy {
+                            from binary
+                            into architectureDir
+                            rename { 'OneSignalKMP.a' }
+                        }
+                    } else {
+                        exec {
+                            commandLine 'lipo', binary, '-thin', architecture, '-output', archive
+                        }
+                    }
+                    exec {
+                        workingDir architectureDir
+                        commandLine 'ar', '-x', archive, 'OneSignalKMP.framework.o'
+                    }
+                    def buildVersionOutput = new ByteArrayOutputStream()
+                    exec {
+                        commandLine 'vtool', '-show-build',
+                                new File(architectureDir, 'OneSignalKMP.framework.o')
+                        standardOutput = buildVersionOutput
+                    }
+                    def buildVersion = buildVersionOutput.toString()
+                    def commandMatcher = buildVersion =~ /(?m)^\s*cmd\s+(\S+)\s*$/
+                    def versionMatcher = buildVersion =~ /(?m)^\s*version\s+(\S+)\s*$/
+                    def platformMatcher = buildVersion =~ /(?m)^\s*platform\s+(\S+)\s*$/
+                    def minOsMatcher = buildVersion =~ /(?m)^\s*minos\s+(\S+)\s*$/
+                    def actualCommand = commandMatcher.find() ? commandMatcher.group(1) : null
+                    def actualVersion = versionMatcher.find() ? versionMatcher.group(1) : null
+                    def actualPlatform = platformMatcher.find() ? platformMatcher.group(1) : null
+                    def actualMinOs = minOsMatcher.find() ? minOsMatcher.group(1) : null
+                    def isExpected = expected.command
+                            ? actualCommand == expected.command && actualVersion == expected.version
+                            : actualPlatform == expected.platform && actualMinOs == expected.minos
+                    if (!isExpected) {
+                        throw new GradleException(
+                                "${framework.parentFile.name} ${architecture} has unexpected " +
+                                        "Mach-O metadata:\n${buildVersion}")
+                    }
+                }
+            }
+
+            verifyFramework(
+                    deviceFramework,
+                    [arm64: [command: 'LC_VERSION_MIN_IPHONEOS', version: '11.0']])
+            verifyFramework(
+                    simulatorFramework,
+                    [
+                            arm64: [platform: 'IOSSIMULATOR', minos: '14.0'],
+                            x86_64: [command: 'LC_VERSION_MIN_IPHONEOS', version: '11.0']
+                    ])
+            verifyFramework(
+                    catalystFramework,
+                    [
+                            arm64: [platform: 'MACCATALYST', minos: '14.0'],
+                            x86_64: [platform: 'MACCATALYST', minos: '14.0']
+                    ])
+            delete verificationDir
 
             def header = new File(deviceFramework, 'Headers/OneSignalKMP.h')
             if (!header.isFile()) {
