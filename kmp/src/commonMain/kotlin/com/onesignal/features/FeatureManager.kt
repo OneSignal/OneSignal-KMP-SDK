@@ -22,7 +22,9 @@ data class DeferredFeatureActivation(
  *
  * Call [refresh] with [applyAppStartupFlags] `true` once at process start, then
  * `false` for later updates so [FeatureActivationMode.APP_STARTUP] flags do not
- * flip mid-run. [refresh] returns any APP_STARTUP changes that were held.
+ * flip mid-run. A second `true` is ignored for already-latched APP_STARTUP flags;
+ * [FeatureManager] tracks that initialization itself. [refresh] returns any
+ * APP_STARTUP changes that were held.
  *
  * State updates are guarded by an internal lock so [isEnabled] / [refresh] /
  * [enabledFeatureKeys] are safe across host threads.
@@ -30,6 +32,7 @@ data class DeferredFeatureActivation(
 class FeatureManager {
     private val lock = PlatformLock()
     private var featureStates: Map<FeatureFlag, Boolean> = emptyMap()
+    private var hasCompletedFirstRefresh = false
 
     fun isEnabled(feature: FeatureFlag): Boolean =
         lock.withLock {
@@ -55,7 +58,9 @@ class FeatureManager {
 
     /**
      * @param remoteKeys Keys from the last trusted fetch or cache.
-     * @param applyAppStartupFlags `true` on first load this process; `false` on later updates.
+     * @param applyAppStartupFlags `true` on first load this process; `false` on later
+     * updates. Honored only until the first [refresh] completes; later `true` values
+     * cannot overwrite an already-latched APP_STARTUP flag.
      * @param localOverrides Extra keys treated as enabled (test/debug only).
      * @return APP_STARTUP flags whose remote desired value differed from the
      * latched run value and were therefore not applied.
@@ -81,7 +86,10 @@ class FeatureManager {
                         // After the first refresh every catalog flag is present in
                         // [featureStates], including those that resolved to false.
                         val alreadyLatched = nextStates.containsKey(feature)
-                        if (applyAppStartupFlags || !alreadyLatched) {
+                        val applyStartup =
+                            !alreadyLatched ||
+                                (applyAppStartupFlags && !hasCompletedFirstRefresh)
+                        if (applyStartup) {
                             nextStates[feature] = desired
                         } else {
                             val latched = nextStates[feature] ?: false
@@ -99,6 +107,7 @@ class FeatureManager {
                 }
             }
             featureStates = nextStates
+            hasCompletedFirstRefresh = true
             deferred
         }
 }

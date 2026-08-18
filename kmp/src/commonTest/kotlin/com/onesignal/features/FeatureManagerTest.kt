@@ -94,6 +94,23 @@ class FeatureManagerTest {
     }
 
     @Test
+    fun laterTrueDoesNotOverwriteAppStartupLatch() {
+        val manager = FeatureManager()
+        manager.refresh(
+            listOf(FeatureFlag.SDK_CUSTOM_LOGGING.key),
+            applyAppStartupFlags = true,
+        )
+        assertTrue(manager.isEnabled(FeatureFlag.SDK_CUSTOM_LOGGING))
+
+        val deferred = manager.refresh(emptyList(), applyAppStartupFlags = true)
+        assertTrue(manager.isEnabled(FeatureFlag.SDK_CUSTOM_LOGGING))
+        assertEquals(1, deferred.size)
+        assertEquals(FeatureFlag.SDK_CUSTOM_LOGGING.key, deferred[0].key)
+        assertFalse(deferred[0].desiredEnabled)
+        assertTrue(deferred[0].latchedEnabled)
+    }
+
+    @Test
     fun processStartRefreshDoesNotReportDeferred() {
         val manager = FeatureManager()
         val deferred =

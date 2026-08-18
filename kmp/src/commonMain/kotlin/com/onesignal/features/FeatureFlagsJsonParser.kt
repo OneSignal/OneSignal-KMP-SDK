@@ -17,7 +17,7 @@ import kotlinx.serialization.json.buildJsonObject
  * kotlinx.serialization types stay internal to this parser so the public surface does not
  * require the serialization dependency on host compile classpaths.
  */
-object FeatureFlagsJsonParser {
+internal object FeatureFlagsJsonParser {
     /**
      * RFC 8259–style JSON only (no lenient tokens like unquoted keys, `NaN`, trailing commas).
      */

@@ -2,7 +2,6 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFrameworkConfig
 
 plugins {
     id 'org.jetbrains.kotlin.multiplatform'
-    id 'org.jetbrains.kotlin.plugin.serialization'
     id 'com.android.library'
     id 'com.diffplug.spotless'
 }
@@ -151,6 +150,9 @@ kotlin {
             kotlin.srcDir(generateLoggerBuildInfo)
             dependencies {
                 implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion"
+                // Library API only (Json.parseToJsonElement). No @Serializable models, so the
+                // serialization compiler plugin is not applied. Hosts must still define
+                // kotlinxSerializationJsonVersion on rootProject (this repo and the Android SDK).
                 implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:$kotlinxSerializationJsonVersion"
             }
         }
@@ -191,12 +193,14 @@ if (!publishSharedKmp) {
             ['LoggerFactory', 'ILogger', 'ILoggerPlatformProvider', 'ILogHttpSender', 'ILogFileStore',
              'FeatureFlagsClient', 'IFeatureFlagsHttp', 'FeatureManager', 'FeatureFlag',
              'DeferredFeatureActivation', 'RemoteFeatureFlagsFetchOutcome',
-             'RemoteFeatureFlagsResult', 'RemoteFeatureFlagsUnavailableReason'].each { publicType ->
+             'RemoteFeatureFlagsResult', 'RemoteFeatureFlagsUnavailableReason',
+             'FeatureFlagMetadata'].each { publicType ->
                 if (!headerText.contains("swift_name(\"${publicType}\")")) {
                     throw new GradleException("Generated Objective-C header does not expose ${publicType}")
                 }
             }
-            ['LogBatchProcessor', 'LogTelemetryRemoteImpl', 'LogTelemetryCrashImpl'].each { internalType ->
+            ['LogBatchProcessor', 'LogTelemetryRemoteImpl', 'LogTelemetryCrashImpl',
+             'FeatureFlagsJsonParser'].each { internalType ->
                 if (headerText.contains(internalType)) {
                     throw new GradleException("Generated Objective-C header exposes internal type ${internalType}")
                 }

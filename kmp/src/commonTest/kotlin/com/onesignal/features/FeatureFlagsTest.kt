@@ -95,8 +95,8 @@ class FeatureFlagsJsonParserTest {
 
         val r = FeatureFlagsJsonParser.parse(payload)
         assertEquals(listOf("sdk_background_threading"), r.enabledKeys)
-        val map = FeatureFlagsJsonParser.parseStoredMetadataMap(r.metadataJson)
-        assertTrue(map.getValue("sdk_background_threading").contains("0.5"))
+        val meta = requireNotNull(FeatureFlagMetadata.parse(r.metadataJson))
+        assertTrue(requireNotNull(meta.jsonObjectForId("sdk_background_threading")).contains("0.5"))
     }
 
     @Test
@@ -155,9 +155,22 @@ class FeatureFlagsJsonParserTest {
             }
             """.trimIndent()
         val r = FeatureFlagsJsonParser.parse(payload)
-        val map = FeatureFlagsJsonParser.parseStoredMetadataMap(r.metadataJson)
-        assertTrue(map.containsKey("feature_a"))
-        assertTrue(map.getValue("feature_a").contains("weight"))
+        val meta = requireNotNull(FeatureFlagMetadata.parse(r.metadataJson))
+        assertTrue(meta.ids().contains("feature_a"))
+        assertTrue(requireNotNull(meta.jsonObjectForId("feature_a")).contains("weight"))
+    }
+
+    @Test
+    fun metadataParseReturnsNullForBlank() {
+        assertNull(FeatureFlagMetadata.parse(null))
+        assertNull(FeatureFlagMetadata.parse(""))
+        assertNull(FeatureFlagMetadata.parse("   "))
+    }
+
+    @Test
+    fun metadataParseInvalidJsonIsEmpty() {
+        val meta = requireNotNull(FeatureFlagMetadata.parse("{"))
+        assertEquals(emptyList(), meta.ids())
     }
 }
 
