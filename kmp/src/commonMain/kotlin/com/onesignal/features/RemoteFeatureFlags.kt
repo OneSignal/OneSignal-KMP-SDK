@@ -60,8 +60,9 @@ enum class RemoteFeatureFlagsUnavailableReason {
  * previously cached flags and inspect [reason] / [statusCode] / [bodySnippet] for logging.
  *
  * Construct only via [success] / [unavailable] so success and result cannot disagree.
+ * Regular class (not a data class) so Kotlin 1.9 cannot generate a public `copy()`.
  */
-data class RemoteFeatureFlagsFetchOutcome private constructor(
+class RemoteFeatureFlagsFetchOutcome private constructor(
     val isSuccess: Boolean,
     val result: RemoteFeatureFlagsResult?,
     val reason: RemoteFeatureFlagsUnavailableReason?,
