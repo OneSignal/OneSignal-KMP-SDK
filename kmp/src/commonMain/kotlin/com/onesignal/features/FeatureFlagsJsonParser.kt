@@ -34,9 +34,10 @@ object FeatureFlagsJsonParser {
     fun parse(payload: String): RemoteFeatureFlagsResult = parseSuccessful(payload) ?: RemoteFeatureFlagsResult.EMPTY
 
     /**
-     * Parses a 200 response body. Returns `null` if the text is not JSON, not an object, does not
-     * contain a `features` array, or if any array element is not a non-empty string. Returns an
-     * empty result for `{"features":[]}`.
+     * Parses a 200 response body. Returns `null` if the text is not JSON, not an object, or does not
+     * contain a `features` array. Invalid array elements are dropped; valid string ids are kept.
+     * Returns an empty result for `{"features":[]}`. A non-empty array that filters to nothing
+     * returns `null` so callers keep the cached list instead of persisting `[]`.
      */
     fun parseSuccessful(payload: String): RemoteFeatureFlagsResult? {
         return try {
@@ -51,29 +52,27 @@ object FeatureFlagsJsonParser {
     private fun parseRootStrict(root: JsonObject): RemoteFeatureFlagsResult? {
         val featuresEl = root[FEATURES_PROPERTY] ?: return null
         val featuresArray = featuresEl as? JsonArray ?: return null
-        if (featuresArray.isEmpty()) {
-            return RemoteFeatureFlagsResult(emptyList(), null)
-        }
+        val flagEntries =
+            featuresArray.mapNotNull { el ->
+                (el as? JsonPrimitive)
+                    ?.takeIf { it.isString }
+                    ?.content
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let { raw -> raw to canonicalizeFeatureFlagId(raw) }
+            }.distinctBy { it.second }
 
-        val flagEntries = ArrayList<Pair<String, String>>(featuresArray.size)
-        for (el in featuresArray) {
-            val primitive = el as? JsonPrimitive ?: return null
-            if (!primitive.isString) {
-                return null
-            }
-            val raw = primitive.content.trim()
-            if (raw.isEmpty()) {
-                return null
-            }
-            flagEntries.add(raw to canonicalizeFeatureFlagId(raw))
+        if (flagEntries.isEmpty()) {
+            // `[]` is an authoritative empty config; a non-empty array that filtered down
+            // to empty is a contract violation. Null surfaces as Unavailable upstream so
+            // callers preserve the cached list instead of overwriting it with [].
+            return if (featuresArray.isEmpty()) RemoteFeatureFlagsResult(emptyList(), null) else null
         }
-
-        val distinctEntries = flagEntries.distinctBy { it.second }
-        val keys = distinctEntries.map { it.second }
+        val keys = flagEntries.map { it.second }
 
         val metadata =
             buildJsonObject {
-                for ((rawKey, canonicalKey) in distinctEntries) {
+                for ((rawKey, canonicalKey) in flagEntries) {
                     findSiblingJsonObject(root, rawKey, canonicalKey)?.let { put(canonicalKey, it) }
                 }
             }

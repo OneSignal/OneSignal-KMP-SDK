@@ -112,22 +112,37 @@ class FeatureFlagsJsonParserTest {
     }
 
     @Test
-    fun mixedMalformedFeaturesArrayIsRejected() {
-        assertNull(
-            FeatureFlagsJsonParser.parseSuccessful(
-                """{"features":["ok", 123, "also"]}""",
-            ),
-        )
-        assertNull(
-            FeatureFlagsJsonParser.parseSuccessful(
-                """{"features":["ok", null]}""",
-            ),
-        )
-        assertNull(
-            FeatureFlagsJsonParser.parseSuccessful(
-                """{"features":["ok", ""]}""",
-            ),
-        )
+    fun parseSuccessfulKeepsMixedArraysAndDropsInvalidElements() {
+        val r =
+            requireNotNull(
+                FeatureFlagsJsonParser.parseSuccessful(
+                    """{"features":["good", 1, null, {}, ""]}""",
+                ),
+            )
+        assertEquals(listOf("good"), r.enabledKeys)
+        assertNull(r.metadataJson)
+    }
+
+    @Test
+    fun parseSuccessfulKeepsValidIdsWhenMalformedSiblingsArePresent() {
+        val r =
+            requireNotNull(
+                FeatureFlagsJsonParser.parseSuccessful(
+                    """{"features":["ok", 123, "also"]}""",
+                ),
+            )
+        assertEquals(listOf("ok", "also"), r.enabledKeys)
+    }
+
+    @Test
+    fun parseSuccessfulReturnsNullWhenNonEmptyArrayHasNoValidIds() {
+        assertNull(FeatureFlagsJsonParser.parseSuccessful("""{"features":[1,2,3]}"""))
+        assertNull(FeatureFlagsJsonParser.parseSuccessful("""{"features":[null]}"""))
+        assertNull(FeatureFlagsJsonParser.parseSuccessful("""{"features":[{}]}"""))
+        assertNull(FeatureFlagsJsonParser.parseSuccessful("""{"features":[[]]}"""))
+        assertNull(FeatureFlagsJsonParser.parseSuccessful("""{"features":[true,false]}"""))
+        assertNull(FeatureFlagsJsonParser.parseSuccessful("""{"features":[""]}"""))
+        assertNull(FeatureFlagsJsonParser.parseSuccessful("""{"features":["   "]}"""))
     }
 
     @Test
