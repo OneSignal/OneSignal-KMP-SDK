@@ -10,10 +10,10 @@ plugins {
 // Kotlin Multiplatform ":kmp" module — OneSignal's shared multiplatform code.
 //
 // One umbrella module (published as `com.onesignal:kmp`) that hosts all shared,
-// platform-agnostic Kotlin. Today it contains the logger (package
-// `com.onesignal.logger`); future shared features (e.g. `common`, `notifications`)
-// land as sibling packages inside this same module rather than new Gradle modules,
-// so the iOS side only ever links a single framework.
+// platform-agnostic Kotlin. Today it contains the logger (`com.onesignal.logger`)
+// and Turbine feature-flags client + catalog (`com.onesignal.features`); more shared
+// packages land as siblings here rather than new Gradle modules, so the iOS
+// side only ever links a single framework.
 //
 // The logger is the platform-agnostic, OpenTelemetry-free replacement for the
 // `otel` module. ALL logic lives in `commonMain` (pure Kotlin, no Android or
@@ -166,6 +166,10 @@ kotlin {
             kotlin.srcDir(generateLoggerBuildInfo)
             dependencies {
                 implementation "org.jetbrains.kotlinx:kotlinx-coroutines-core:$coroutinesVersion"
+                // Library API only (Json.parseToJsonElement). No @Serializable models, so the
+                // serialization compiler plugin is not applied. Hosts must still define
+                // kotlinxSerializationJsonVersion on rootProject (this repo and the Android SDK).
+                implementation "org.jetbrains.kotlinx:kotlinx-serialization-json:$kotlinxSerializationJsonVersion"
             }
         }
         commonTest {
@@ -339,12 +343,17 @@ if (!publishSharedKmp) {
             }
 
             def headerText = header.text
-            ['LoggerFactory', 'ILogger', 'ILoggerPlatformProvider', 'ILogHttpSender', 'ILogFileStore'].each { publicType ->
+            ['LoggerFactory', 'ILogger', 'ILoggerPlatformProvider', 'ILogHttpSender', 'ILogFileStore',
+             'FeatureFlagsClient', 'IFeatureFlagsHttp', 'FeatureManager', 'FeatureFlag',
+             'DeferredFeatureActivation', 'RemoteFeatureFlagsFetchOutcome',
+             'RemoteFeatureFlagsResult', 'RemoteFeatureFlagsUnavailableReason',
+             'FeatureFlagMetadata'].each { publicType ->
                 if (!headerText.contains("swift_name(\"${publicType}\")")) {
                     throw new GradleException("Generated Objective-C header does not expose ${publicType}")
                 }
             }
-            ['LogBatchProcessor', 'LogTelemetryRemoteImpl', 'LogTelemetryCrashImpl'].each { internalType ->
+            ['LogBatchProcessor', 'LogTelemetryRemoteImpl', 'LogTelemetryCrashImpl',
+             'FeatureFlagsJsonParser'].each { internalType ->
                 if (headerText.contains(internalType)) {
                     throw new GradleException("Generated Objective-C header exposes internal type ${internalType}")
                 }

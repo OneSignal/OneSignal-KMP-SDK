@@ -15,6 +15,7 @@ buildscript {
         androidGradlePluginVersion = '8.8.2'
         kotlinVersion = '2.3.0'
         coroutinesVersion = '1.7.3'
+        kotlinxSerializationJsonVersion = '1.6.3'
         spotlessVersion = '6.25.0'
         ktlintVersion = '0.50.0'
     }
