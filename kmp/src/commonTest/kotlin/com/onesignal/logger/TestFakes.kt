@@ -45,12 +45,15 @@ internal class FakePlatformProvider(
 internal class FakeHttpSender(
     var responses: ArrayDeque<LogHttpResponse> = ArrayDeque(),
     var defaultResponse: LogHttpResponse = LogHttpResponse(success = true, statusCode = 200),
+    /** Drained before [responses]; each entry makes one send throw, as a transport failure would. */
+    var exceptions: ArrayDeque<Exception> = ArrayDeque(),
 ) : ILogHttpSender {
     private val mutex = Mutex()
     val sentRequests = mutableListOf<LogHttpRequest>()
 
     override suspend fun send(request: LogHttpRequest): LogHttpResponse {
         mutex.withLock { sentRequests.add(request) }
+        if (exceptions.isNotEmpty()) throw exceptions.removeFirst()
         return if (responses.isNotEmpty()) responses.removeFirst() else defaultResponse
     }
 

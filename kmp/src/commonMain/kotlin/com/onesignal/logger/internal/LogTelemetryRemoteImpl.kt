@@ -17,6 +17,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Remote telemetry sink: batches records and ships them as OTLP/protobuf over the
@@ -29,6 +30,7 @@ internal class LogTelemetryRemoteImpl(
     private val topLevelFields: LogFieldsTopLevel,
     private val perEventFields: LogFieldsPerEvent,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val retrier: ExportRetrier = ExportRetrier(),
 ) : ILogTelemetryRemote {
     companion object {
         private const val MAX_QUEUE_SIZE = 100
@@ -79,12 +81,36 @@ internal class LogTelemetryRemoteImpl(
         )
     }
 
+    /**
+     * Batched export retries transient failures in place. The batch being retried is the
+     * only one held — records arriving meanwhile keep filling the processor's bounded
+     * queue and are dropped past `maxQueueSize`, so memory stays capped at two batches.
+     */
     private suspend fun exportBatch(records: List<EncodableRecord>) {
         val payload = OtlpLogEncoder.encode(getResourceAttributes(), records)
-        post(payload)
+        retrier.execute { attemptPost(payload) }
     }
 
     override suspend fun exportEncoded(payload: ByteArray): Boolean = post(payload)
+
+    private suspend fun attemptPost(payload: ByteArray): ExportAttempt =
+        try {
+            val response =
+                httpSender.send(
+                    LogHttpRequest(
+                        url = endpoint,
+                        headers = headers,
+                        contentType = OtlpLogEncoder.CONTENT_TYPE,
+                        body = payload,
+                    ),
+                )
+            classifyStatus(response.success, response.statusCode)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            // A thrown sender is a transport failure, same as statusCode -1.
+            ExportAttempt.RETRYABLE
+        }
 
     private suspend fun post(payload: ByteArray): Boolean {
         val response =

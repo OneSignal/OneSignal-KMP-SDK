@@ -44,9 +44,8 @@ internal class LogBatchProcessor<T>(
                 try {
                     drainAndExport()
                 } catch (_: Exception) {
-                    // Keep the consumer alive. The failed batch was already drained —
-                    // best-effort drop (no retry), matching a failed HTTP post that
-                    // returns success=false without re-queueing.
+                    // Keep the consumer alive. [onExport] owns any retry policy; by the
+                    // time it throws, the batch is unrecoverable and already drained.
                 }
             }
         }
