@@ -59,9 +59,9 @@ class CrashRetentionTest {
     fun selectExpiredOwned_takes_only_owned_records_strictly_past_the_ceiling() {
         val entries =
             listOf(
-                owned("1-a.otlp", ageMs = CrashRetention.MAX_READ_AGE_MILLIS + 1),
-                owned("2-b.otlp", ageMs = CrashRetention.MAX_READ_AGE_MILLIS - 1),
-                foreign("legacy", ageMs = CrashRetention.MAX_READ_AGE_MILLIS * 2),
+                owned("1-a.otlp", ageMs = CrashRetention.maxReadAgeMillis + 1),
+                owned("2-b.otlp", ageMs = CrashRetention.maxReadAgeMillis - 1),
+                foreign("legacy", ageMs = CrashRetention.maxReadAgeMillis * 2),
             )
 
         val expired = CrashRetention.selectExpiredOwned(entries, nowMs = now)
@@ -71,7 +71,7 @@ class CrashRetentionTest {
 
     @Test
     fun selectExpiredOwned_treats_a_record_at_exactly_the_ceiling_as_readable() {
-        val entries = listOf(owned("1-a.otlp", ageMs = CrashRetention.MAX_READ_AGE_MILLIS))
+        val entries = listOf(owned("1-a.otlp", ageMs = CrashRetention.maxReadAgeMillis))
 
         assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
     }
@@ -79,7 +79,7 @@ class CrashRetentionTest {
     @Test
     fun selectExpiredOwned_ignores_records_whose_write_time_is_in_the_future() {
         // A backwards clock step must not read as extreme age in either direction.
-        val entries = listOf(owned("1-a.otlp", ageMs = -CrashRetention.MAX_READ_AGE_MILLIS * 2))
+        val entries = listOf(owned("1-a.otlp", ageMs = -CrashRetention.maxReadAgeMillis * 2))
 
         assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
     }
@@ -100,7 +100,7 @@ class CrashRetentionTest {
 
     @Test
     fun selectOverflowOwned_evicts_oldest_first_past_the_count_cap() {
-        val max = CrashRetention.MAX_RECORD_COUNT
+        val max = CrashRetention.maxRecordCount
         val entries = (1..max + 2).map { owned("$it-a.otlp", ageMs = it * 1_000L) }
 
         val evicted = CrashRetention.selectOverflowOwned(entries)
@@ -111,7 +111,7 @@ class CrashRetentionTest {
 
     @Test
     fun selectOverflowOwned_never_touches_foreign_entries() {
-        val max = CrashRetention.MAX_RECORD_COUNT
+        val max = CrashRetention.maxRecordCount
         val entries =
             (1..max + 1).map { owned("$it-a.otlp", ageMs = it * 1_000L) } +
                 foreign("legacy", ageMs = 999_000)
@@ -128,7 +128,7 @@ class CrashRetentionTest {
         val entries =
             listOf(
                 owned("5-newest.otlp", ageMs = 1_000, bytes = 10),
-                owned("4-huge.otlp", ageMs = 2_000, bytes = CrashRetention.MAX_TOTAL_BYTES * 2),
+                owned("4-huge.otlp", ageMs = 2_000, bytes = CrashRetention.maxTotalBytes * 2),
                 owned("3-small.otlp", ageMs = 3_000, bytes = 10),
                 owned("2-small.otlp", ageMs = 4_000, bytes = 10),
             )
@@ -140,7 +140,7 @@ class CrashRetentionTest {
     fun a_record_that_does_not_fit_the_remaining_budget_is_skipped_not_treated_as_a_cutoff() {
         // Four near-cap records fill most of the budget. The next cannot fit, but a smaller
         // and *older* one still can — proving the loop skips rather than stopping.
-        val nearCap = CrashRetention.MAX_RECORD_BYTES - 12_288
+        val nearCap = CrashRetention.maxRecordBytes - 12_288
         val entries =
             (1..4).map { owned("${10 - it}-fills.otlp", ageMs = it * 1_000L, bytes = nearCap) } +
                 owned("5-does-not-fit.otlp", ageMs = 5_000, bytes = 200_000) +
@@ -153,7 +153,7 @@ class CrashRetentionTest {
 
     @Test
     fun keepName_retains_the_just_written_record_even_when_it_sorts_oldest() {
-        val max = CrashRetention.MAX_RECORD_COUNT
+        val max = CrashRetention.maxRecordCount
         val entries =
             (1..max).map { owned("$it-a.otlp", ageMs = it * 1_000L) } +
                 owned("fresh-a.otlp", ageMs = 999_000)
@@ -170,7 +170,7 @@ class CrashRetentionTest {
         // failed the remaining-budget check and the whole backlog was evicted.
         val backlog = (1..4).map { owned("$it-small.otlp", ageMs = it * 10_000L, bytes = 400_000) }
         val entries =
-            backlog + owned("fresh-a.otlp", ageMs = 1_000, bytes = CrashRetention.MAX_TOTAL_BYTES * 2)
+            backlog + owned("fresh-a.otlp", ageMs = 1_000, bytes = CrashRetention.maxTotalBytes * 2)
 
         val evicted = CrashRetention.selectOverflowOwned(entries, keepName = "fresh-a.otlp")
 
@@ -206,7 +206,7 @@ class CrashRetentionTest {
         assertTrue(CrashRetention.isWithinCaps(within))
         assertEquals(emptyList(), CrashRetention.selectOverflowOwned(within))
 
-        val overCount = (1..CrashRetention.MAX_RECORD_COUNT + 1).map { owned("$it-a.otlp", ageMs = it * 1_000L) }
+        val overCount = (1..CrashRetention.maxRecordCount + 1).map { owned("$it-a.otlp", ageMs = it * 1_000L) }
         assertFalse(CrashRetention.isWithinCaps(overCount))
         assertTrue(CrashRetention.selectOverflowOwned(overCount).isNotEmpty())
     }
@@ -215,7 +215,7 @@ class CrashRetentionTest {
     fun isWithinCaps_charges_oversized_records_only_their_capped_share() {
         // One huge inherited record must not make the directory look over budget on its own,
         // or a crash path would sort and trim on every single write.
-        val entries = listOf(owned("huge.otlp", ageMs = 1_000, bytes = CrashRetention.MAX_TOTAL_BYTES * 4))
+        val entries = listOf(owned("huge.otlp", ageMs = 1_000, bytes = CrashRetention.maxTotalBytes * 4))
 
         assertTrue(CrashRetention.isWithinCaps(entries))
     }

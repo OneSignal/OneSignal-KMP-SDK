@@ -37,7 +37,7 @@ data class CrashDirEntry(
  */
 object CrashRetention {
     /** Suffix marking a record this SDK wrote. Anything else in the directory is foreign. */
-    const val OWNED_SUFFIX: String = ".otlp"
+    val ownedSuffixDefault: String = ".otlp"
 
     /**
      * How long an owned record stays eligible for upload. Carried over from the disk-buffering
@@ -45,38 +45,38 @@ object CrashRetention {
      * worth shipping, and the ceiling is what stops a permanently-failing record from being
      * retried forever.
      */
-    const val MAX_READ_AGE_MILLIS: Long = 72L * 60 * 60 * 1000
+    val maxReadAgeMillis: Long = 72L * 60 * 60 * 1000
 
     /**
      * Record-count ceiling. This is the bound that normally binds: crash records are
      * single-event OTLP payloads of a few KB, so this covers far more unsent crashes than a
      * healthy install will ever accumulate.
      */
-    const val MAX_RECORD_COUNT: Int = 50
+    val maxRecordCount: Int = 50
 
     /**
      * Byte budget across all owned records, as a backstop for payload profiles the count cap
      * alone would not contain.
      *
      * This bounds *claim*, not bytes on disk. Since writes are size-limited by
-     * [MAX_RECORD_BYTES] the two coincide for anything written by a build enforcing that
+     * [maxRecordBytes] the two coincide for anything written by a build enforcing that
      * limit. They diverge only for records inherited from one that did not: each claims at
-     * most [MAX_RECORD_BYTES], so a few oversized leftovers can occupy more than this while
+     * most [maxRecordBytes], so a few oversized leftovers can occupy more than this while
      * still counting as within cap. That is deliberate — they are real crashes and deserve an
-     * upload attempt — and it stays bounded by [MAX_RECORD_COUNT] and by [MAX_READ_AGE_MILLIS]
+     * upload attempt — and it stays bounded by [maxRecordCount] and by [maxReadAgeMillis]
      * aging them out.
      */
-    const val MAX_TOTAL_BYTES: Long = 2L * 1024 * 1024
+    val maxTotalBytes: Long = 2L * 1024 * 1024
 
     /**
      * Largest payload a store should write. Refusing at the source is what makes "every stored
      * record fits the shared budget" an invariant; without it an outsized payload is either
      * kept at the cost of everything else, or written and then deleted before it can be sent.
      */
-    const val MAX_RECORD_BYTES: Long = 512L * 1024
+    val maxRecordBytes: Long = 512L * 1024
 
     /** True when [name] is a record this SDK wrote. */
-    fun isOwned(name: String, ownedSuffix: String = OWNED_SUFFIX): Boolean = name.endsWith(ownedSuffix)
+    fun isOwned(name: String, ownedSuffix: String = ownedSuffixDefault): Boolean = name.endsWith(ownedSuffix)
 
     /**
      * Foreign entries old enough to reclaim — files sharing the directory that this store does
@@ -89,7 +89,7 @@ object CrashRetention {
         entries: List<CrashDirEntry>,
         nowMs: Long,
         minAgeMillis: Long,
-        ownedSuffix: String = OWNED_SUFFIX,
+        ownedSuffix: String = ownedSuffixDefault,
     ): List<CrashDirEntry> =
         entries.filter { entry ->
             !isOwned(entry.name, ownedSuffix) && nowMs - entry.lastModifiedMs >= minAgeMillis
@@ -107,8 +107,8 @@ object CrashRetention {
     fun selectExpiredOwned(
         entries: List<CrashDirEntry>,
         nowMs: Long,
-        maxAgeMillis: Long = MAX_READ_AGE_MILLIS,
-        ownedSuffix: String = OWNED_SUFFIX,
+        maxAgeMillis: Long = maxReadAgeMillis,
+        ownedSuffix: String = ownedSuffixDefault,
     ): List<CrashDirEntry> =
         entries.filter { entry ->
             isOwned(entry.name, ownedSuffix) && nowMs - entry.lastModifiedMs > maxAgeMillis
@@ -132,11 +132,11 @@ object CrashRetention {
     @Suppress("LongParameterList")
     fun selectOverflowOwned(
         entries: List<CrashDirEntry>,
-        maxCount: Int = MAX_RECORD_COUNT,
-        maxTotalBytes: Long = MAX_TOTAL_BYTES,
-        maxRecordBytes: Long = MAX_RECORD_BYTES,
+        maxCount: Int = maxRecordCount,
+        maxTotalBytes: Long = CrashRetention.maxTotalBytes,
+        maxRecordBytes: Long = CrashRetention.maxRecordBytes,
         keepName: String? = null,
-        ownedSuffix: String = OWNED_SUFFIX,
+        ownedSuffix: String = ownedSuffixDefault,
     ): List<CrashDirEntry> {
         // Ties break on the millis embedded in the name, which preserves write order when the
         // filesystem reports a coarser timestamp. Names that do not parse sort last within
@@ -176,10 +176,10 @@ object CrashRetention {
      */
     fun isWithinCaps(
         entries: List<CrashDirEntry>,
-        maxCount: Int = MAX_RECORD_COUNT,
-        maxTotalBytes: Long = MAX_TOTAL_BYTES,
-        maxRecordBytes: Long = MAX_RECORD_BYTES,
-        ownedSuffix: String = OWNED_SUFFIX,
+        maxCount: Int = maxRecordCount,
+        maxTotalBytes: Long = CrashRetention.maxTotalBytes,
+        maxRecordBytes: Long = CrashRetention.maxRecordBytes,
+        ownedSuffix: String = ownedSuffixDefault,
     ): Boolean {
         val owned = entries.filter { isOwned(it.name, ownedSuffix) }
         val claimed = owned.sumOf { minOf(it.lengthBytes, maxRecordBytes) }
@@ -196,7 +196,7 @@ object CrashRetention {
         entries: List<CrashDirEntry>,
         nowMs: Long,
         maxSample: Int,
-        ownedSuffix: String = OWNED_SUFFIX,
+        ownedSuffix: String = ownedSuffixDefault,
     ): String {
         if (entries.isEmpty()) {
             return "OneSignal: Crash storage inventory [$label] ($path): empty"
