@@ -29,6 +29,25 @@ data class StoredLogFile(
  *
  * Implementations must be safe to call from a crash path (i.e. cheap, no heavy
  * initialization).
+ *
+ * ## Retention is required, not optional
+ *
+ * This store is a bounded cache, not an unbounded queue. `disk-buffering` applied an age
+ * ceiling and size limits; replacing it means implementations now owe the same guarantees, or
+ * a record that never uploads successfully is re-read and re-sent on every launch for the life
+ * of the install while the directory grows without bound.
+ *
+ * [com.onesignal.logger.crash.CrashRetention] supplies that policy as pure functions so every
+ * platform behaves identically. An implementation is expected to:
+ *
+ * - refuse writes larger than [com.onesignal.logger.crash.CrashRetention.MAX_RECORD_BYTES] in
+ *   [save], so no single payload can claim the whole budget;
+ * - reclaim entries chosen by
+ *   [com.onesignal.logger.crash.CrashRetention.selectExpiredOwned] and
+ *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned] on every path that scans
+ *   the directory — not only after a write, or a backlog inherited from an earlier build is
+ *   never trimmed;
+ * - keep reclaimed entries out of [listReadable] in the same pass.
  */
 interface ILogFileStore {
     /**
@@ -53,6 +72,9 @@ interface ILogFileStore {
      * gate mirrors `minFileAgeForReadMillis` from the old pipeline: it guarantees
      * we never read a file that may still be mid-write from the crashing process.
      *
+     * Implementations should apply retention here before materializing payloads, so an
+     * over-cap or expired backlog is reclaimed rather than loaded and re-sent.
+     *
      * Suspends so implementations can perform the (blocking) directory scan and reads
      * on a background dispatcher — keeping the shared upload pipeline off the caller's
      * thread on every platform, and bridging to Swift `async` on iOS.
@@ -69,12 +91,17 @@ interface ILogFileStore {
      * bare-millis files left in a shared crash directory) whose age is at least
      * [minAgeMillis].
      *
-     * Owned records — including failed uploads and files still under the age gate —
-     * must always be preserved. Foreign/unrecognized files younger than
-     * [minAgeMillis] must also be preserved so an in-flight legacy write during a
-     * module-flag transition is not deleted mid-write. Callers typically pass
-     * [ILoggerPlatformProvider.minFileAgeForReadMillis] for the same safety margin
-     * used by [listReadable].
+     * Foreign/unrecognized files younger than [minAgeMillis] must be preserved so an
+     * in-flight write by another writer is not deleted mid-write. Callers typically pass
+     * [ILoggerPlatformProvider.minFileAgeForReadMillis] for the same safety margin used by
+     * [listReadable].
+     *
+     * Owned records are preserved here *as a class* — a failed upload or a record still under
+     * the age gate must survive to be retried. The exceptions are the ones retention has
+     * disqualified: entries past the age ceiling or beyond the accumulation caps are no longer
+     * uploadable or no longer affordable, and reclaiming them is this method's other job. This
+     * is also the only scan that runs when remote logging is disabled, so it is the sole
+     * opportunity to bound a directory that is never otherwise read.
      *
      * Default is a no-op for test doubles / platforms with no shared-directory legacy.
      *
