@@ -40,13 +40,17 @@ data class StoredLogFile(
  * [com.onesignal.logger.crash.CrashRetention] supplies that policy as pure functions so every
  * platform behaves identically. An implementation is expected to:
  *
- * - refuse writes larger than [com.onesignal.logger.crash.CrashRetention.MAX_RECORD_BYTES] in
+ * - refuse writes larger than [com.onesignal.logger.crash.CrashRetention.maxRecordBytes] in
  *   [save], so no single payload can claim the whole budget;
  * - reclaim entries chosen by
  *   [com.onesignal.logger.crash.CrashRetention.selectExpiredOwned] and
  *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned] on every path that scans
  *   the directory — not only after a write, or a backlog inherited from an earlier build is
  *   never trimmed;
+ * - apply those two in that order, passing only the *survivors* of the expiry pass into
+ *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned]. Feeding it the raw
+ *   listing lets already-expired records consume count slots and budget, so it evicts live
+ *   uploadable records to make room for ones that are about to be deleted anyway;
  * - keep reclaimed entries out of [listReadable] in the same pass.
  */
 interface ILogFileStore {
