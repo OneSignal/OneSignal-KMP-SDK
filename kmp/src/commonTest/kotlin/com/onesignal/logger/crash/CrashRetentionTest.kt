@@ -277,9 +277,10 @@ class CrashRetentionTest {
     @Test
     fun ordering_the_two_passes_does_not_change_which_live_records_survive() {
         // Expired entries are by definition the oldest, so overflow sorts them last and evicts
-        // them first. Feeding it the raw listing therefore costs no live record — it only
-        // returns entries the expiry pass would have removed anyway. Pinned because the
-        // contract used to claim the opposite.
+        // them first. Feeding it the raw listing therefore costs no *additional* live record
+        // over running expiry first — the live records lost to the count cap are the same
+        // either way, and the extra entries it returns are ones expiry would have removed.
+        // Pinned because the contract used to claim the raw listing evicted live records.
         val expired =
             (1..100).map { owned("expired-$it.otlp", ageMs = policy.maxReadAgeMillis + it * 1_000L) }
         val fresh = (1..60).map { owned("fresh-$it.otlp", ageMs = it * 1_000L) }
