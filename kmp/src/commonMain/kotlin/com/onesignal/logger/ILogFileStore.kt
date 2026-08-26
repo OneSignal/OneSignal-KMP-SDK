@@ -38,10 +38,15 @@ data class StoredLogFile(
  * of the install while the directory grows without bound.
  *
  * [com.onesignal.logger.crash.CrashRetention] supplies that policy as pure functions so every
- * platform behaves identically. An implementation is expected to:
+ * platform behaves identically. Every selector takes a
+ * [com.onesignal.logger.crash.CrashRetentionPolicy]; an implementation should hold one
+ * instance — [com.onesignal.logger.crash.CrashRetention.defaultPolicy] unless it has a reason
+ * to differ — and pass the same one everywhere, so its bounds cannot drift between call
+ * sites. An implementation is expected to:
  *
- * - refuse writes larger than [com.onesignal.logger.crash.CrashRetention.maxRecordBytes] in
- *   [save], so no single payload can claim the whole budget;
+ * - refuse writes larger than
+ *   [com.onesignal.logger.crash.CrashRetentionPolicy.maxRecordBytes] in [save], so no single
+ *   payload can claim the whole budget;
  * - reclaim entries chosen by
  *   [com.onesignal.logger.crash.CrashRetention.selectExpiredOwned] and
  *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned] on every path that scans
