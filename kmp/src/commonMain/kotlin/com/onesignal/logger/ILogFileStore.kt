@@ -23,12 +23,33 @@ data class StoredLogFile(
 /**
  * Platform-agnostic durable store for crash records.
  *
- * Replaces OpenTelemetry's `disk-buffering` contrib library. The on-disk format is
- * entirely owned by this module (each record is one encoded OTLP/protobuf payload), so
- * the same logic works on any platform that can provide simple file primitives.
+ * Each record is one encoded OTLP/protobuf payload, a format this module owns entirely, so
+ * the same logic works on any platform providing simple file primitives.
  *
  * Implementations must be safe to call from a crash path (i.e. cheap, no heavy
  * initialization).
+ *
+ * ## Retention is required, not optional
+ *
+ * This is a bounded cache, not a queue: without bounds a record that never uploads is re-read
+ * and re-sent on every launch for the life of the install.
+ *
+ * [com.onesignal.logger.crash.CrashRetention] supplies the policy so every platform behaves
+ * identically. Hold one [com.onesignal.logger.crash.CrashRetentionPolicy] instance —
+ * [com.onesignal.logger.crash.CrashRetention.defaultPolicy] unless you have reason to differ —
+ * and pass the same one everywhere so its bounds cannot drift between call sites. An
+ * implementation is expected to:
+ *
+ * - refuse writes larger than
+ *   [com.onesignal.logger.crash.CrashRetentionPolicy.maxRecordBytes] in [save];
+ * - run *both* [com.onesignal.logger.crash.CrashRetention.selectExpiredOwned] and
+ *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned] on every path that scans
+ *   the directory, not only after a write. Overflow alone leaves an expired record that fits
+ *   under the caps on disk forever; expiry alone leaves an unbounded backlog of in-window
+ *   records. Order between them does not change which records survive — expired entries are
+ *   the oldest, so overflow evicts them first either way — but running expiry first keeps
+ *   overflow from doing work on entries that are already going away;
+ * - keep reclaimed entries out of [listReadable] in the same pass.
  */
 interface ILogFileStore {
     /**
@@ -53,6 +74,9 @@ interface ILogFileStore {
      * gate mirrors `minFileAgeForReadMillis` from the old pipeline: it guarantees
      * we never read a file that may still be mid-write from the crashing process.
      *
+     * Implementations should apply retention here before materializing payloads, so an
+     * over-cap or expired backlog is reclaimed rather than loaded and re-sent.
+     *
      * Suspends so implementations can perform the (blocking) directory scan and reads
      * on a background dispatcher — keeping the shared upload pipeline off the caller's
      * thread on every platform, and bridging to Swift `async` on iOS.
@@ -69,12 +93,17 @@ interface ILogFileStore {
      * bare-millis files left in a shared crash directory) whose age is at least
      * [minAgeMillis].
      *
-     * Owned records — including failed uploads and files still under the age gate —
-     * must always be preserved. Foreign/unrecognized files younger than
-     * [minAgeMillis] must also be preserved so an in-flight legacy write during a
-     * module-flag transition is not deleted mid-write. Callers typically pass
-     * [ILoggerPlatformProvider.minFileAgeForReadMillis] for the same safety margin
-     * used by [listReadable].
+     * Foreign/unrecognized files younger than [minAgeMillis] must be preserved so an
+     * in-flight write by another writer is not deleted mid-write. Callers typically pass
+     * [ILoggerPlatformProvider.minFileAgeForReadMillis] for the same safety margin used by
+     * [listReadable].
+     *
+     * Owned records are preserved here *as a class* — a failed upload or a record still under
+     * the age gate must survive to be retried. The exceptions are the ones retention has
+     * disqualified: entries past the age ceiling or beyond the accumulation caps are no longer
+     * uploadable or no longer affordable, and reclaiming them is this method's other job. This
+     * is also the only scan that runs when remote logging is disabled, so it is the sole
+     * opportunity to bound a directory that is never otherwise read.
      *
      * Default is a no-op for test doubles / platforms with no shared-directory legacy.
      *
