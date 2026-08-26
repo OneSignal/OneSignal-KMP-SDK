@@ -7,9 +7,12 @@ import com.onesignal.logger.internal.ExportRetrier
 import com.onesignal.logger.internal.LogTelemetryRemoteImpl
 import com.onesignal.logger.internal.RetryPolicy
 import com.onesignal.logger.internal.classifyStatus
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -140,58 +143,136 @@ class LogExportRetryTest {
         assertEquals(RetryPolicy().maxAttempts, http.sentRequests.size)
     }
 
-    @Test
-    fun elapsedCapStopsRetriesBeforeAttemptCap() = runTest {
-        // The clock is advanced explicitly by the fake sender, not by the act of reading it,
-        // so the outcome depends on elapsed time rather than on how many times the retrier
-        // happens to call nowMillis(). An assertion of "fewer than maxAttempts" would pass at
-        // 9 attempts — i.e. against a nearly-broken ceiling — so pin the exact count.
-        var clock = 0L
-        val retrier =
-            ExportRetrier(
-                policy = RetryPolicy(maxAttempts = 10, maxElapsedMillis = 15_000L),
-                nowMillis = { clock },
-                nextRandom = { 0.5 },
-            )
-        var attempts = 0
+    /**
+     * Records the virtual time at which each attempt starts, so the gaps between them are
+     * the backoffs the retrier actually slept. `nextRandom = 0.5` is the midpoint of the
+     * jitter spread, i.e. a factor of exactly 1.0, which makes the schedule deterministic.
+     */
+    private suspend fun TestScope.backoffsFor(
+        policy: RetryPolicy,
+        nextRandom: () -> Double = { 0.5 },
+    ): List<Long> {
+        val attemptTimes = mutableListOf<Long>()
+        ExportRetrier(policy = policy, nextRandom = nextRandom).execute {
+            attemptTimes += testScheduler.currentTime
+            ExportAttempt.RETRYABLE
+        }
+        return attemptTimes.zipWithNext { previous, next -> next - previous }
+    }
 
+    @Test
+    fun backoffFollowsTheAdvertisedSchedule() = runTest {
+        // The numbers in RetryPolicy's KDoc and in the PR table are a promise; pin them.
+        // 1s initial, 1.6x each time, clamped at the 5s per-delay ceiling.
+        val backoffs = backoffsFor(RetryPolicy(maxAttempts = 7, maxTotalBackoffMillis = 60_000L))
+
+        assertEquals(listOf(1_000L, 1_600L, 2_560L, 4_096L, 5_000L, 5_000L), backoffs)
+    }
+
+    @Test
+    fun jitterScalesEachDelayByTheConfiguredFactor() = runTest {
+        // +/-20% around the nominal delay, so a fleet backing off together re-spreads.
+        val policy = RetryPolicy(maxAttempts = 3, maxTotalBackoffMillis = 60_000L)
+
+        assertEquals(listOf(800L, 1_280L), backoffsFor(policy, nextRandom = { 0.0 }))
+        assertEquals(listOf(1_200L, 1_920L), backoffsFor(policy, nextRandom = { 1.0 }))
+    }
+
+    @Test
+    fun theBackoffBudgetClampsTheLastDelayAndThenStopsRetrying() = runTest {
+        // The budget is charged against sleeping only, so it is exact rather than dependent
+        // on how long each attempt took: 1000 + 1600 leaves 400 of a 3s budget, and the
+        // fourth attempt never starts. Asserting the clamped 400 rather than just the count
+        // is what stops a "return early instead of clamping" regression from passing.
+        var attempts = 0
+        val attemptTimes = mutableListOf<Long>()
         val succeeded =
-            retrier.execute {
+            ExportRetrier(
+                policy = RetryPolicy(maxAttempts = 10, maxTotalBackoffMillis = 3_000L),
+                nextRandom = { 0.5 },
+            ).execute {
                 attempts++
-                clock += 8_000L // each attempt burns 8s of the 15s budget
+                attemptTimes += testScheduler.currentTime
                 ExportAttempt.RETRYABLE
             }
 
         assertFalse(succeeded)
-        // Attempt 1 ends at 8s (7s left, retry). Attempt 2 ends at 16s, over budget.
-        assertEquals(2, attempts)
+        assertEquals(4, attempts)
+        assertEquals(listOf(1_000L, 1_600L, 400L), attemptTimes.zipWithNext { a, b -> b - a })
     }
 
     @Test
-    fun elapsedCapStopsBeforeStartingAnotherAttemptAfterBackoff() = runTest {
-        // Checking the budget only before the delay bounds when the *wait* may start, not
-        // when the work may start. A sender sitting on its own timeout could then push total
-        // elapsed far past the ceiling while the caller is blocked on it.
-        //
-        // The clock has to include virtual time or the backoff consumes no budget and the
-        // re-check is meaningless: `burned` is what each attempt costs, `currentTime` is what
-        // the delays cost.
-        var burned = 0L
-        val retrier =
-            ExportRetrier(
-                policy = RetryPolicy(maxAttempts = 10, maxElapsedMillis = 15_000L, initialBackoffMillis = 1_000L),
-                nowMillis = { burned + testScheduler.currentTime },
-                nextRandom = { 0.5 },
-            )
+    fun theAttemptCapHoldsNoMatterHowSlowEachAttemptIs() = runTest {
+        // The bound this policy actually enforces. A wall-clock ceiling would cut this to
+        // two attempts against a sender sitting on its 10s connect timeout — the slow-failure
+        // case retry exists for — so the attempt count has to survive slow attempts intact.
         var attempts = 0
-
-        retrier.execute {
+        ExportRetrier(policy = RetryPolicy(), nextRandom = { 0.5 }).execute {
             attempts++
-            burned += 14_500L // leaves 500ms, which the backoff then consumes entirely
+            delay(10_000L) // a connect timeout, not a fast 503
             ExportAttempt.RETRYABLE
         }
 
+        assertEquals(RetryPolicy().maxAttempts, attempts)
+    }
+
+    @Test
+    fun anAbortSignalWakesAnInFlightBackoffImmediately() = runTest {
+        // Teardown's lever: without it, shutdown queues behind the whole retry cycle holding
+        // the export mutex, which outlasts its own flush timeout.
+        val abort = CompletableDeferred<Unit>()
+        var attempts = 0
+        val job =
+            backgroundScope.launch {
+                ExportRetrier(
+                    policy = RetryPolicy(maxAttempts = 10, initialBackoffMillis = 30_000L),
+                    nextRandom = { 0.5 },
+                ).execute(abortSignal = abort) {
+                    attempts++
+                    ExportAttempt.RETRYABLE
+                }
+            }
+
+        runCurrent()
+        assertEquals(1, attempts) // parked in a 30s backoff
+
+        abort.complete(Unit)
+        runCurrent()
+
+        assertTrue(job.isCompleted)
+        assertEquals(0L, testScheduler.currentTime) // returned without waiting out the backoff
         assertEquals(1, attempts)
+    }
+
+    @Test
+    fun anAlreadyAbortedSignalStillLetsTheAttemptInFlightFinish() = runTest {
+        // Abort stops retrying, it does not cancel work. Shutdown's own flush goes through
+        // this path with the signal already completed and must still post once.
+        val abort = CompletableDeferred(Unit)
+        var attempts = 0
+
+        val succeeded =
+            ExportRetrier(policy = RetryPolicy(), nextRandom = { 0.5 })
+                .execute(abortSignal = abort) {
+                    attempts++
+                    ExportAttempt.SUCCESS
+                }
+
+        assertTrue(succeeded)
+        assertEquals(1, attempts)
+    }
+
+    @Test
+    fun shutdownFlushesOnceWithoutEnteringARetryCycle() = runTest {
+        // shutdown() blocks its caller — on Android a lifecycle thread — so its flush must
+        // not be able to start a retry cycle whose backoffs outlast the flush budget.
+        val http = FakeHttpSender(defaultResponse = failure(503))
+        val telemetry = remote(backgroundScope, http)
+
+        telemetry.emit(LogRecord(LogSeverity.ERROR, "hello", emptyMap()))
+        telemetry.shutdown()
+
+        assertEquals(1, http.sentRequests.size)
     }
 
     @Test
@@ -225,7 +306,6 @@ class LogExportRetryTest {
         val retrier =
             ExportRetrier(
                 policy = RetryPolicy(maxAttempts = 10),
-                nowMillis = { 0L },
                 nextRandom = { 0.5 },
             )
         val job =
