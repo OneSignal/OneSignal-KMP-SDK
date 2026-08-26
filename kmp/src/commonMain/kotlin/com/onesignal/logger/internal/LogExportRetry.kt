@@ -89,6 +89,12 @@ internal class ExportRetrier(
 
             delay(min(jittered(backoffMillis), remainingMillis))
             backoffMillis = min((backoffMillis * policy.backoffMultiplier).toLong(), policy.maxBackoffMillis)
+
+            // Re-check after sleeping. Checking only before the delay bounds when the *wait*
+            // may start, not when the work may start: a sender sitting on its own timeout
+            // (10s on both platforms) can push total elapsed well past the ceiling, and the
+            // caller is blocked on this the whole time.
+            if (policy.maxElapsedMillis - (nowMillis() - start) <= 0) return false
         }
     }
 

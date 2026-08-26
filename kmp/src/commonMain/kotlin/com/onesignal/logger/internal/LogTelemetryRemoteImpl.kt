@@ -106,6 +106,11 @@ internal class LogTelemetryRemoteImpl(
                 )
             classifyStatus(response.success, response.statusCode)
         } catch (e: CancellationException) {
+            // Not redundant with the catch below: CancellationException is an Exception in
+            // Kotlin, so without this a cancelled scope is misread as a transient backend
+            // failure and the retrier keeps going. On the paths that return before the next
+            // delay() — attempt cap reached, elapsed budget spent — nothing would rethrow it
+            // and the cancellation would be lost entirely.
             throw e
         } catch (_: Exception) {
             // A thrown sender is a transport failure, same as statusCode -1.
