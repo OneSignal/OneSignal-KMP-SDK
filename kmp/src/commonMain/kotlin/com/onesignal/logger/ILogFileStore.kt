@@ -23,39 +23,34 @@ data class StoredLogFile(
 /**
  * Platform-agnostic durable store for crash records.
  *
- * Replaces OpenTelemetry's `disk-buffering` contrib library. The on-disk format is
- * entirely owned by this module (each record is one encoded OTLP/protobuf payload), so
- * the same logic works on any platform that can provide simple file primitives.
+ * Each record is one encoded OTLP/protobuf payload, a format this module owns entirely, so
+ * the same logic works on any platform providing simple file primitives.
  *
  * Implementations must be safe to call from a crash path (i.e. cheap, no heavy
  * initialization).
  *
  * ## Retention is required, not optional
  *
- * This store is a bounded cache, not an unbounded queue. `disk-buffering` applied an age
- * ceiling and size limits; replacing it means implementations now owe the same guarantees, or
- * a record that never uploads successfully is re-read and re-sent on every launch for the life
- * of the install while the directory grows without bound.
+ * This is a bounded cache, not a queue: without bounds a record that never uploads is re-read
+ * and re-sent on every launch for the life of the install.
  *
- * [com.onesignal.logger.crash.CrashRetention] supplies that policy as pure functions so every
- * platform behaves identically. Every selector takes a
- * [com.onesignal.logger.crash.CrashRetentionPolicy]; an implementation should hold one
- * instance — [com.onesignal.logger.crash.CrashRetention.defaultPolicy] unless it has a reason
- * to differ — and pass the same one everywhere, so its bounds cannot drift between call
- * sites. An implementation is expected to:
+ * [com.onesignal.logger.crash.CrashRetention] supplies the policy so every platform behaves
+ * identically. Hold one [com.onesignal.logger.crash.CrashRetentionPolicy] instance —
+ * [com.onesignal.logger.crash.CrashRetention.defaultPolicy] unless you have reason to differ —
+ * and pass the same one everywhere so its bounds cannot drift between call sites. An
+ * implementation is expected to:
  *
  * - refuse writes larger than
- *   [com.onesignal.logger.crash.CrashRetentionPolicy.maxRecordBytes] in [save], so no single
- *   payload can claim the whole budget;
+ *   [com.onesignal.logger.crash.CrashRetentionPolicy.maxRecordBytes] in [save];
  * - reclaim entries chosen by
  *   [com.onesignal.logger.crash.CrashRetention.selectExpiredOwned] and
  *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned] on every path that scans
- *   the directory — not only after a write, or a backlog inherited from an earlier build is
- *   never trimmed;
- * - apply those two in that order, passing only the *survivors* of the expiry pass into
+ *   the directory, not only after a write — otherwise a backlog inherited from an earlier
+ *   build is never trimmed;
+ * - apply those two in that order, passing only the expiry pass's *survivors* into
  *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned]. Feeding it the raw
- *   listing lets already-expired records consume count slots and budget, so it evicts live
- *   uploadable records to make room for ones that are about to be deleted anyway;
+ *   listing lets already-expired records consume count slots and budget, evicting live
+ *   records to make room for ones about to be deleted;
  * - keep reclaimed entries out of [listReadable] in the same pass.
  */
 interface ILogFileStore {
