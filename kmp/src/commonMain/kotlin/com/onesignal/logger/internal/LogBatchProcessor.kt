@@ -7,6 +7,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Coroutine-based batch processor. Hand-rolled, dependency-light replacement for
@@ -43,10 +44,14 @@ internal class LogBatchProcessor<T>(
                 withTimeoutOrNull(scheduleDelayMillis) { flushSignal.receive() }
                 try {
                     drainAndExport()
+                } catch (e: CancellationException) {
+                    // CancellationException is an Exception in Kotlin, so the catch below
+                    // would swallow it and spin this loop until isActive flips. Shutdown
+                    // and scope cancellation both depend on it unwinding here.
+                    throw e
                 } catch (_: Exception) {
-                    // Keep the consumer alive. The failed batch was already drained —
-                    // best-effort drop (no retry), matching a failed HTTP post that
-                    // returns success=false without re-queueing.
+                    // Keep the consumer alive. [onExport] owns any retry policy; by the
+                    // time it throws, the batch is unrecoverable and already drained.
                 }
             }
         }

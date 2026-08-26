@@ -9,6 +9,7 @@ import com.onesignal.logger.attributes.LogFieldsPerEvent
 import com.onesignal.logger.attributes.LogFieldsTopLevel
 import com.onesignal.logger.otlp.EncodableRecord
 import com.onesignal.logger.otlp.OtlpLogEncoder
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -17,6 +18,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Remote telemetry sink: batches records and ships them as OTLP/protobuf over the
@@ -29,13 +31,21 @@ internal class LogTelemetryRemoteImpl(
     private val topLevelFields: LogFieldsTopLevel,
     private val perEventFields: LogFieldsPerEvent,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+    private val retrier: ExportRetrier = ExportRetrier(),
 ) : ILogTelemetryRemote {
     companion object {
         private const val MAX_QUEUE_SIZE = 100
         private const val MAX_BATCH_SIZE = 100
         private const val SCHEDULE_DELAY_MILLIS = 1_000L
 
-        /** Cap so a hung HTTP send cannot block app teardown indefinitely. */
+        /**
+         * Cap so a hung HTTP send cannot block app teardown indefinitely. It only has to
+         * cover a single send, not a retry cycle: [shutdownSignal] stops the retrier first,
+         * so nothing here can be waiting out a backoff. Deliberately shorter than either
+         * platform sender's own 10s timeout — [shutdown] runs under `runBlocking`, and on
+         * Android that is a lifecycle thread (a log-level change routes through it), so
+         * dropping a hung batch beats blocking that thread for the sender's full timeout.
+         */
         private const val SHUTDOWN_FLUSH_TIMEOUT_MILLIS = 5_000L
     }
 
@@ -51,6 +61,9 @@ internal class LogTelemetryRemoteImpl(
 
     private val resourceMutex = Mutex()
     private var cachedResourceAttributes: Map<String, String>? = null
+
+    /** Completed by [shutdown] to collapse any in-flight retry cycle. */
+    private val shutdownSignal = CompletableDeferred<Unit>()
 
     private val batchProcessor =
         LogBatchProcessor<EncodableRecord>(
@@ -79,12 +92,44 @@ internal class LogTelemetryRemoteImpl(
         )
     }
 
+    /**
+     * Batched export retries transient failures in place. The batch being retried is the
+     * only one held — records arriving meanwhile keep filling the processor's bounded
+     * queue and are dropped past `maxQueueSize`, so memory stays capped at two batches.
+     *
+     * The retry runs under the processor's export mutex, which [forceFlush] and [shutdown]
+     * both need, hence [shutdownSignal].
+     */
     private suspend fun exportBatch(records: List<EncodableRecord>) {
         val payload = OtlpLogEncoder.encode(getResourceAttributes(), records)
-        post(payload)
+        retrier.execute(abortSignal = shutdownSignal) { attemptPost(payload) }
     }
 
     override suspend fun exportEncoded(payload: ByteArray): Boolean = post(payload)
+
+    private suspend fun attemptPost(payload: ByteArray): ExportAttempt =
+        try {
+            val response =
+                httpSender.send(
+                    LogHttpRequest(
+                        url = endpoint,
+                        headers = headers,
+                        contentType = OtlpLogEncoder.CONTENT_TYPE,
+                        body = payload,
+                    ),
+                )
+            classifyStatus(response.success, response.statusCode)
+        } catch (e: CancellationException) {
+            // Not redundant with the catch below: CancellationException is an Exception in
+            // Kotlin, so without this a cancelled scope is misread as a transient backend
+            // failure and the retrier keeps going. On the paths that return without
+            // suspending again — attempt cap reached, backoff budget spent, abort signalled —
+            // nothing would rethrow it and the cancellation would be lost entirely.
+            throw e
+        } catch (_: Exception) {
+            // A thrown sender is a transport failure, same as statusCode -1.
+            ExportAttempt.RETRYABLE
+        }
 
     private suspend fun post(payload: ByteArray): Boolean {
         val response =
@@ -102,6 +147,13 @@ internal class LogTelemetryRemoteImpl(
     override suspend fun forceFlush() = batchProcessor.flush()
 
     override fun shutdown() {
+        // Stop the retrier before asking for the flush. Without this, teardown landing on a
+        // backend blip queues behind a retry cycle whose backoffs alone outlast the flush
+        // budget below: the batch is dropped anyway, only after blocking the caller for the
+        // full timeout. The aborted batch is not requeued — it is mid-retry precisely because
+        // the backend is rejecting it, so a final attempt would just cost another round trip.
+        shutdownSignal.complete(Unit)
+
         // Best-effort flush before teardown. Bounded so a hung sender cannot block
         // app disable/teardown; remaining buffered records are dropped on cancel.
         try {

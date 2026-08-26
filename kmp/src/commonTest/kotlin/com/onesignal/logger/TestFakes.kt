@@ -45,13 +45,29 @@ internal class FakePlatformProvider(
 internal class FakeHttpSender(
     var responses: ArrayDeque<LogHttpResponse> = ArrayDeque(),
     var defaultResponse: LogHttpResponse = LogHttpResponse(success = true, statusCode = 200),
+    /** Drained before [responses]; each entry makes one send throw, as a transport failure would. */
+    var exceptions: ArrayDeque<Exception> = ArrayDeque(),
 ) : ILogHttpSender {
     private val mutex = Mutex()
     val sentRequests = mutableListOf<LogHttpRequest>()
 
     override suspend fun send(request: LogHttpRequest): LogHttpResponse {
-        mutex.withLock { sentRequests.add(request) }
-        return if (responses.isNotEmpty()) responses.removeFirst() else defaultResponse
+        // Both queues are drained under the same lock as the recording. The retry tests are
+        // the first to drive this repeatedly, and a fake that advertises thread-safety it
+        // only half-provides is worse than one that makes no claim.
+        val queued =
+            mutex.withLock {
+                sentRequests.add(request)
+                // A queued exception short-circuits without consuming a response, so the two
+                // queues stay independent the way callers expect.
+                if (exceptions.isNotEmpty()) {
+                    exceptions.removeFirst() to null
+                } else {
+                    null to (if (responses.isNotEmpty()) responses.removeFirst() else defaultResponse)
+                }
+            }
+        queued.first?.let { throw it }
+        return queued.second!!
     }
 
     fun lastBodyAsString(): String = sentRequests.last().body.decodeToString()
