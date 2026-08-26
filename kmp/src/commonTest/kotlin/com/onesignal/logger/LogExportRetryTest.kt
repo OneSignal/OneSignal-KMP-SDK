@@ -266,6 +266,14 @@ class LogExportRetryTest {
     fun shutdownFlushesOnceWithoutEnteringARetryCycle() = runTest {
         // shutdown() blocks its caller — on Android a lifecycle thread — so its flush must
         // not be able to start a retry cycle whose backoffs outlast the flush budget.
+        //
+        // This is the integration-level guard on the abort wiring: it goes through the real
+        // telemetry, and dropping `abortSignal = shutdownSignal` from exportBatch makes it
+        // post three times instead of once. A variant that parks in a backoff *before*
+        // teardown would read better, but shutdown() is deliberately non-suspend and uses
+        // runBlocking, so it does not interleave with runTest's virtual clock and such a test
+        // passes whether or not the abort is wired. anAbortSignalWakesAnInFlightBackoff-
+        // Immediately covers the wake-from-backoff behaviour directly on the retrier instead.
         val http = FakeHttpSender(defaultResponse = failure(503))
         val telemetry = remote(backgroundScope, http)
 

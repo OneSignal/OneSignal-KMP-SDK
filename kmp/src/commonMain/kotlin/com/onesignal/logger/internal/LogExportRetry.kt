@@ -57,7 +57,9 @@ internal fun classifyStatus(
         success -> ExportAttempt.SUCCESS
         statusCode == TRANSPORT_FAILURE_STATUS_CODE -> ExportAttempt.RETRYABLE
         statusCode in RETRYABLE_STATUS_CODES -> ExportAttempt.RETRYABLE
-        // Everything else — 4xx, and the -2 "remote logging disabled" sentinel — is permanent.
+        // Everything else is permanent: 4xx, plus the sender sentinels for conditions that
+        // cannot resolve themselves — -2 "remote logging disabled" and -3 "request could not
+        // be built" (a malformed base URL or app id).
         else -> ExportAttempt.PERMANENT
     }
 
