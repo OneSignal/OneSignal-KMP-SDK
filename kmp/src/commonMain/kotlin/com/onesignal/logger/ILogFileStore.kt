@@ -42,15 +42,13 @@ data class StoredLogFile(
  *
  * - refuse writes larger than
  *   [com.onesignal.logger.crash.CrashRetentionPolicy.maxRecordBytes] in [save];
- * - reclaim entries chosen by
- *   [com.onesignal.logger.crash.CrashRetention.selectExpiredOwned] and
+ * - run *both* [com.onesignal.logger.crash.CrashRetention.selectExpiredOwned] and
  *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned] on every path that scans
- *   the directory, not only after a write — otherwise a backlog inherited from an earlier
- *   build is never trimmed;
- * - apply those two in that order, passing only the expiry pass's *survivors* into
- *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned]. Feeding it the raw
- *   listing lets already-expired records consume count slots and budget, evicting live
- *   records to make room for ones about to be deleted;
+ *   the directory, not only after a write. Overflow alone leaves an expired record that fits
+ *   under the caps on disk forever; expiry alone leaves an unbounded backlog of in-window
+ *   records. Order between them does not change which records survive — expired entries are
+ *   the oldest, so overflow evicts them first either way — but running expiry first keeps
+ *   overflow from doing work on entries that are already going away;
  * - keep reclaimed entries out of [listReadable] in the same pass.
  */
 interface ILogFileStore {

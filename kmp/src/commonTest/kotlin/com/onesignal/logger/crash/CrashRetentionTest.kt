@@ -256,14 +256,10 @@ class CrashRetentionTest {
         assertEquals(emptyList(), CrashRetention.selectOverflowOwned(emptyList(), nowMs = now))
     }
 
-    // ===== composition: expiry must run before overflow =====
+    // ===== composition: both passes must run; order does not decide survivors =====
 
     @Test
-    fun overflow_fed_the_expiry_survivors_reclaims_only_the_expired_records() {
-        // The order the ILogFileStore contract requires. Expired records are still on disk
-        // when the listing is taken, so if they are passed to the overflow pass they consume
-        // count slots and evict live, uploadable records to make room for records that are
-        // about to be deleted anyway.
+    fun overflow_after_expiry_reclaims_nothing_when_the_survivors_fit() {
         val expired =
             (1..policy.maxRecordCount).map {
                 owned("expired-$it.otlp", ageMs = policy.maxReadAgeMillis + it * 1_000L)
@@ -273,28 +269,43 @@ class CrashRetentionTest {
 
         val expiredNames = CrashRetention.selectExpiredOwned(listing, nowMs = now).map { it.name }.toSet()
         val survivors = listing.filterNot { it.name in expiredNames }
-        val evicted = CrashRetention.selectOverflowOwned(survivors, nowMs = now)
 
         assertEquals(policy.maxRecordCount, expiredNames.size)
-        // Every fresh record survives; nothing beyond the expired set is reclaimed.
-        assertEquals(emptyList(), evicted)
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(survivors, nowMs = now))
     }
 
     @Test
-    fun overflow_fed_the_raw_listing_would_evict_live_records() {
-        // Pins why the order matters, so the contract note has a failing case behind it.
+    fun ordering_the_two_passes_does_not_change_which_live_records_survive() {
+        // Expired entries are by definition the oldest, so overflow sorts them last and evicts
+        // them first. Feeding it the raw listing therefore costs no live record — it only
+        // returns entries the expiry pass would have removed anyway. Pinned because the
+        // contract used to claim the opposite.
         val expired =
-            (1..policy.maxRecordCount).map {
-                owned("expired-$it.otlp", ageMs = policy.maxReadAgeMillis + it * 1_000L)
-            }
-        val fresh = (1..5).map { owned("fresh-$it.otlp", ageMs = it * 1_000L) }
+            (1..100).map { owned("expired-$it.otlp", ageMs = policy.maxReadAgeMillis + it * 1_000L) }
+        val fresh = (1..60).map { owned("fresh-$it.otlp", ageMs = it * 1_000L) }
+        val listing = expired + fresh
 
-        val evicted = CrashRetention.selectOverflowOwned(expired + fresh, nowMs = now)
+        val fromRaw = CrashRetention.selectOverflowOwned(listing, nowMs = now)
+        val expiredNames = CrashRetention.selectExpiredOwned(listing, nowMs = now).map { it.name }.toSet()
+        val fromSurvivors =
+            CrashRetention.selectOverflowOwned(listing.filterNot { it.name in expiredNames }, nowMs = now)
 
-        // 55 owned records against a cap of 50 — the 5 oldest go, and they are all expired
-        // here, but the count slots they occupied are what forces any eviction at all.
-        assertEquals(5, evicted.size)
-        assertTrue(evicted.all { it.name.startsWith("expired-") }, evicted.map { it.name }.toString())
+        val liveFromRaw = fromRaw.filter { it.name.startsWith("fresh-") }
+        val liveFromSurvivors = fromSurvivors.filter { it.name.startsWith("fresh-") }
+
+        // 60 live against a cap of 50: the same 10 go either way.
+        assertEquals(10, liveFromRaw.size)
+        assertEquals(liveFromRaw.map { it.name }, liveFromSurvivors.map { it.name })
+    }
+
+    @Test
+    fun overflow_alone_leaves_an_expired_record_that_fits_under_the_caps() {
+        // Why both passes are required rather than just overflow: nothing about being over-age
+        // reclaims a record if the directory is within its accumulation bounds.
+        val listing = listOf(owned("stale.otlp", ageMs = policy.maxReadAgeMillis + 60_000))
+
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(listing, nowMs = now))
+        assertEquals(listOf("stale.otlp"), CrashRetention.selectExpiredOwned(listing, nowMs = now).map { it.name })
     }
 
     // ===== cheap-path agreement =====
