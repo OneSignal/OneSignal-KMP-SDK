@@ -36,6 +36,10 @@ private val RETRYABLE_STATUS_CODES = setOf(429, 502, 503, 504)
 /**
  * Sentinel both platform senders already report for a transport-level failure
  * (no HTTP response at all): DNS, connect/read timeout, socket reset.
+ *
+ * This means "the request went out and nothing usable came back", which is worth retrying.
+ * A failure to *build* the request is not — it will fail identically every time — so senders
+ * must report that separately (iOS uses -3) and let it fall through to permanent below.
  */
 internal const val TRANSPORT_FAILURE_STATUS_CODE = -1
 

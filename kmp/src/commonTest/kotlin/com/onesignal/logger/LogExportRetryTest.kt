@@ -249,6 +249,14 @@ class LogExportRetryTest {
     }
 
     @Test
+    fun aRequestThatCouldNotBeBuiltIsPermanent() {
+        // iOS reports -3 when URL construction fails. Retrying cannot help, and reusing the
+        // -1 transport sentinel for it would burn the full budget on every batch against a
+        // misconfiguration that never resolves.
+        assertEquals(ExportAttempt.PERMANENT, classifyStatus(success = false, statusCode = -3))
+    }
+
+    @Test
     fun classifiesStatusCodes() {
         assertEquals(ExportAttempt.SUCCESS, classifyStatus(success = true, statusCode = 200))
         listOf(429, 502, 503, 504, -1).forEach {
