@@ -45,23 +45,14 @@ interface ILoggerPlatformProvider {
         get() = null
 
     /**
-     * Swift language version of the host app when applicable (e.g. the
-     * compile-time `SWIFT_VERSION`). Null on non-Swift hosts. Emitted as
-     * `ossdk.swift_version` when non-blank.
-     *
-     * Same Kotlin-vs-Swift default caveat as [kotlinVersion].
-     */
-    val swiftVersion: String?
-        get() = null
-
-    /**
      * Extra static version labels for dashboard filtering. Each entry is
      * written as `ossdk.<key>` (keys should be short snake_case suffixes such
      * as `java_version` or `xcode_version`). Reserved core / language suffixes
      * (`install_id`, `kotlin_version`, `swift_version`, …) are rejected — use
-     * the dedicated properties instead. Blank values are omitted. Defaults to
-     * empty for Kotlin implementors; Swift conformers must declare the member
-     * (return `[:]` until needed).
+     * the dedicated properties instead. `swift_version` has no dedicated
+     * property; it stays reserved so extras cannot reintroduce it. Blank
+     * values are omitted. Defaults to empty for Kotlin implementors; Swift
+     * conformers must declare the member (return `[:]` until needed).
      */
     val additionalVersionAttributes: Map<String, String>
         get() = emptyMap()
