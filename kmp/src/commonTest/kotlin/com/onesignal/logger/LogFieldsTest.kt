@@ -28,16 +28,15 @@ class LogFieldsTest {
     }
 
     @Test
-    fun topLevelIncludesKotlinAndSwiftVersionsWhenProvided() = runTest {
+    fun topLevelIncludesKotlinVersionWhenProvided() = runTest {
         val provider =
             FakePlatformProvider(
                 kotlinVersion = "2.0.21",
-                swiftVersion = "5.10",
             )
         val attrs = LogFieldsTopLevel(provider).getAttributes()
 
         assertEquals("2.0.21", attrs["ossdk.kotlin_version"])
-        assertEquals("5.10", attrs["ossdk.swift_version"])
+        assertFalse(attrs.containsKey("ossdk.swift_version"))
     }
 
     @Test
@@ -45,7 +44,6 @@ class LogFieldsTest {
         val provider =
             FakePlatformProvider(
                 kotlinVersion = "   ",
-                swiftVersion = "",
             )
         val attrs = LogFieldsTopLevel(provider).getAttributes()
 
@@ -58,7 +56,6 @@ class LogFieldsTest {
         val provider =
             FakePlatformProvider(
                 kotlinVersion = "2.1.0",
-                swiftVersion = "6.0",
                 additionalVersionAttributes =
                 mapOf(
                     "java_version" to "17",
@@ -75,7 +72,7 @@ class LogFieldsTest {
         assertEquals("16.2", attrs["ossdk.xcode_version"])
         assertEquals("26.1", attrs["ossdk.ndk_version"])
         assertEquals("2.1.0", attrs["ossdk.kotlin_version"])
-        assertEquals("6.0", attrs["ossdk.swift_version"])
+        assertFalse(attrs.containsKey("ossdk.swift_version"))
         assertFalse(attrs.containsKey("ossdk.ossdk.ndk_version"))
         assertFalse(attrs.containsKey("ossdk.agp_version"))
     }

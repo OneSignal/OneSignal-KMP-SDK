@@ -74,9 +74,10 @@ internal val RESERVED_TOP_LEVEL_OSSDK_SUFFIXES: Set<String> =
  * attribute is the only thing on the wire that ties a record back to the exact
  * KMP source that produced it.
  *
- * Optional host language / toolchain versions (`ossdk.kotlin_version`,
- * `ossdk.swift_version`, plus any `additionalVersionAttributes`) ride along so
- * dashboards can filter by the app's language stack.
+ * Optional host language / toolchain versions (`ossdk.kotlin_version`, plus
+ * any `additionalVersionAttributes`) ride along so dashboards can filter by
+ * the app's language stack. There is no `ossdk.swift_version`: iOS has no
+ * runtime Swift language-mode API, and Xcode is the compatibility gate.
  */
 internal class LogFieldsTopLevel(
     private val platformProvider: ILoggerPlatformProvider,
@@ -101,7 +102,6 @@ internal class LogFieldsTopLevel(
             .putIfValueNotNull("ossdk.sdk_wrapper", platformProvider.sdkWrapper)
             .putIfValueNotNull("ossdk.sdk_wrapper_version", platformProvider.sdkWrapperVersion)
             .putIfValueNotBlank("ossdk.kotlin_version", platformProvider.kotlinVersion)
-            .putIfValueNotBlank("ossdk.swift_version", platformProvider.swiftVersion)
 
         for ((key, value) in platformProvider.additionalVersionAttributes) {
             val suffix = normalizeOssdkAttributeSuffix(key)

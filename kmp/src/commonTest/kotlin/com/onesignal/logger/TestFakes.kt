@@ -16,7 +16,6 @@ internal class FakePlatformProvider(
     override var currentThreadName: String = "test-thread",
     override var enabledFeatureFlags: List<String> = emptyList(),
     override var kotlinVersion: String? = null,
-    override var swiftVersion: String? = null,
     override var additionalVersionAttributes: Map<String, String> = emptyMap(),
     override var crashStoragePath: String = "/tmp/onesignal/crashes",
     override var minFileAgeForReadMillis: Long = 5_000L,
