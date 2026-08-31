@@ -82,6 +82,29 @@ class CrashRetentionTest {
         assertNull(CrashRetention.effectiveWriteTimeMs(undatable("crash-report.otlp")))
     }
 
+    @Test
+    fun effectiveWriteTimeMs_treats_a_non_positive_name_time_as_unreadable_too() {
+        // The screen has to cover the fallback, not just the filesystem: a leading `0` read as
+        // an epoch reading is maximum age, which is the deletion this whole path exists to stop.
+        val entry = CrashDirEntry("0-abc.otlp", lastModifiedMs = null, lengthBytes = 1)
+
+        assertNull(CrashRetention.effectiveWriteTimeMs(entry))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(listOf(entry), nowMs = now))
+    }
+
+    @Test
+    fun effectiveWriteTimeMs_does_not_date_a_foreign_name_that_is_not_bare_millis() {
+        // Legacy otel names are bare millis; `3-tmp.dat` belongs to some other writer's scheme.
+        // Reading its `3` as an epoch time makes a file written seconds ago look reapable.
+        val entry = CrashDirEntry("3-tmp.dat", lastModifiedMs = null, lengthBytes = 1)
+
+        assertNull(CrashRetention.effectiveWriteTimeMs(entry))
+        assertEquals(
+            emptyList(),
+            CrashRetention.selectUnrecognized(listOf(entry), nowMs = now, minAgeMillis = 5_000),
+        )
+    }
+
     // ===== foreign entries =====
 
     @Test
@@ -315,16 +338,15 @@ class CrashRetentionTest {
 
     @Test
     fun an_oversized_protected_record_does_not_evict_the_pending_backlog() {
-        // Charging a protected name its full length started the budget over cap, so every
-        // sibling failed the remaining-budget check and the whole backlog was evicted.
+        // A protected name claims no share of the budget, so an outsized one in flight cannot
+        // push a sibling out of the remaining-budget check.
         val backlog = (1..4).map { owned("$it-small.otlp", ageMs = it * 10_000L, bytes = 400_000) }
         val entries =
             backlog + owned("fresh-a.otlp", ageMs = 1_000, bytes = policy.maxTotalBytes * 2)
 
         val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = setOf("fresh-a.otlp"))
 
-        assertFalse(evicted.any { it.name == "fresh-a.otlp" })
-        assertEquals(listOf("4-small.otlp"), evicted.map { it.name })
+        assertEquals(emptyList(), evicted)
     }
 
     @Test
@@ -533,19 +555,41 @@ class CrashRetentionTest {
     }
 
     @Test
-    fun oversized_protected_records_are_charged_only_their_capped_share() {
-        // Charging protected names their full length would put the budget over cap before the
-        // loop began, failing every sibling's remaining-budget check.
-        val protectedNames = setOf("p1-flight.otlp", "p2-flight.otlp")
-        val entries =
-            listOf(
-                owned("p1-flight.otlp", ageMs = 1_000, bytes = policy.maxTotalBytes * 2),
-                owned("p2-flight.otlp", ageMs = 2_000, bytes = policy.maxTotalBytes * 2),
-            ) + (1..4).map { owned("$it-small.otlp", ageMs = it * 10_000L, bytes = 400_000) }
+    fun protected_records_claiming_the_whole_budget_do_not_evict_the_backlog() {
+        // Four concurrent in-flight writes at the per-record ceiling claim exactly maxTotalBytes.
+        // Charged against the shared budget they left nothing for anything else, so every
+        // pending record failed the fit check and the entire backlog was returned for eviction.
+        val inFlight =
+            (1..4).map { owned("flight-$it.otlp", ageMs = it * 1_000L, bytes = policy.maxRecordBytes) }
+        val backlog = (1..6).map { owned("$it-pending.otlp", ageMs = it * 100_000L, bytes = 1_000) }
 
-        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = protectedNames)
+        val evicted =
+            CrashRetention.selectOverflowOwned(
+                inFlight + backlog,
+                nowMs = now,
+                keepNames = inFlight.mapTo(HashSet()) { it.name },
+            )
 
-        assertEquals(listOf("4-small.otlp", "3-small.otlp"), evicted.map { it.name })
+        assertEquals(emptyList(), evicted)
+    }
+
+    @Test
+    fun the_unprotected_pass_keeps_its_own_byte_budget_while_names_are_protected() {
+        // Protected claims are excused, not the budget itself: the backlog is still trimmed to
+        // maxTotalBytes, so excusing them cannot turn into an unbounded directory.
+        val inFlight =
+            (1..4).map { owned("flight-$it.otlp", ageMs = it * 1_000L, bytes = policy.maxRecordBytes) }
+        val backlog =
+            (1..5).map { owned("$it-pending.otlp", ageMs = it * 100_000L, bytes = policy.maxRecordBytes) }
+
+        val evicted =
+            CrashRetention.selectOverflowOwned(
+                inFlight + backlog,
+                nowMs = now,
+                keepNames = inFlight.mapTo(HashSet()) { it.name },
+            )
+
+        assertEquals(listOf("5-pending.otlp"), evicted.map { it.name })
     }
 
     // ===== composition: both passes must run; order does not decide survivors =====
@@ -567,11 +611,34 @@ class CrashRetentionTest {
     }
 
     @Test
+    fun overflow_alone_sheds_an_expired_record_before_one_it_cannot_date() {
+        // The write path runs overflow and no expiry, so ranking has to make this call alone.
+        // A record past the read ceiling is known unuploadable; an undatable one may still be a
+        // live crash. Ranked equal, the count cap kept the dead one and dropped the live one.
+        val listing =
+            (1..49).map { owned("fresh-$it.otlp", ageMs = it * 1_000L) } +
+                owned("stale.otlp", ageMs = policy.maxReadAgeMillis + 60_000) +
+                undatable("crash-x.otlp")
+
+        val evicted = CrashRetention.selectOverflowOwned(listing, nowMs = now)
+
+        assertEquals(listOf("stale.otlp"), evicted.map { it.name })
+
+        // And that is exactly what running expiry first would have left.
+        val expiredNames = CrashRetention.selectExpiredOwned(listing, nowMs = now).map { it.name }.toSet()
+        assertEquals(setOf("stale.otlp"), expiredNames)
+        assertEquals(
+            emptyList(),
+            CrashRetention.selectOverflowOwned(listing.filterNot { it.name in expiredNames }, nowMs = now),
+        )
+    }
+
+    @Test
     fun ordering_the_two_passes_does_not_change_which_live_records_survive() {
-        // Expired entries are by definition the oldest, so overflow sorts them last and evicts
-        // them first. Feeding it the raw listing therefore costs no *additional* live record
-        // over running expiry first — the live records lost to the count cap are the same
-        // either way, and the extra entries it returns are ones expiry would have removed.
+        // Overflow ranks expired entries below everything still uploadable, so feeding it the
+        // raw listing costs no *additional* live record over running expiry first — the live
+        // records lost to the count cap are the same either way, and the extra entries it
+        // returns are ones expiry would have removed.
         // Pinned because the contract used to claim the raw listing evicted live records.
         val expired =
             (1..100).map { owned("expired-$it.otlp", ageMs = policy.maxReadAgeMillis + it * 1_000L) }

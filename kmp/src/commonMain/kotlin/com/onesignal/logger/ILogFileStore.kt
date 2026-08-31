@@ -46,9 +46,10 @@ data class StoredLogFile(
  *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned] on every path that scans
  *   the directory, not only after a write. Overflow alone leaves an expired record that fits
  *   under the caps on disk forever; expiry alone leaves an unbounded backlog of in-window
- *   records. Order between them does not change which records survive — expired entries are
- *   the oldest, so overflow evicts them first either way — but running expiry first keeps
- *   overflow from doing work on entries that are already going away;
+ *   records. Order between them does not change which still-uploadable records survive —
+ *   overflow ranks anything already past a read gate below everything else, so it sheds those
+ *   first either way — but running expiry first keeps overflow from doing work on entries that
+ *   are already going away;
  * - keep reclaimed entries out of [listReadable] in the same pass.
  *
  * ## Unreadable modification times
