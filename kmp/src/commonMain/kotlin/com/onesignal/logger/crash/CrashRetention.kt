@@ -33,7 +33,13 @@ data class CrashRetentionPolicy(
     val maxTotalBytes: Long = 2L * 1024 * 1024,
     val maxRecordBytes: Long = 512L * 1024,
     val ownedSuffix: String = ".otlp",
-)
+) {
+    /**
+     * Name an interrupted write leaves behind: foreign, since it must never be read, but datable.
+     * Stores must build temp names from this or their interrupted writes are never reclaimed.
+     */
+    val ownedTempSuffix: String get() = "$ownedSuffix.tmp"
+}
 
 /**
  * Retention policy for locally-buffered crash records, shared by every platform implementing
@@ -53,16 +59,19 @@ object CrashRetention {
      *
      * A non-positive reading from *either* source counts as unreadable — nothing here predates
      * the epoch, and a platform reporting failure as `0` must not read back as maximum age. Only
-     * a name matching a known scheme is a write time: `{millis}-{uuid}{ownedSuffix}` when owned,
-     * an entirely-numeric legacy name when foreign.
+     * a name matching a known scheme is a write time: `{millis}-{uuid}` before this policy's
+     * owned or temp suffix, an entirely-numeric legacy name when foreign.
      *
      * `null` means undatable. Such an entry is never age-expired, but still counts toward
      * [isWithinCaps] and is still evictable by [selectOverflowOwned], so it cannot leak.
      *
-     * Platforms must gate reads on this value rather than on [CrashDirEntry.lastModifiedMs], or
-     * a record can be withheld by one clock and reclaimed by another.
+     * Platforms must gate reads on this rather than on [CrashDirEntry.lastModifiedMs], under the
+     * same [policy] their selectors use, or one clock withholds a record another reclaims.
      */
-    fun effectiveWriteTimeMs(entry: CrashDirEntry): Long? = writeTimeMs(entry, defaultPolicy)
+    fun effectiveWriteTimeMs(
+        entry: CrashDirEntry,
+        policy: CrashRetentionPolicy = defaultPolicy,
+    ): Long? = entry.lastModifiedMs?.takeIf { it > 0 } ?: nameMillis(entry.name, policy)
 
     /**
      * Foreign entries old enough to reclaim; owned records are never selected regardless of age
@@ -78,7 +87,7 @@ object CrashRetention {
         policy: CrashRetentionPolicy = defaultPolicy,
     ): List<CrashDirEntry> =
         entries.filter { entry ->
-            val writtenMs = writeTimeMs(entry, policy)
+            val writtenMs = effectiveWriteTimeMs(entry, policy)
             !isOwned(entry.name, policy) &&
                 writtenMs != null &&
                 nowMs - writtenMs >= minAgeMillis
@@ -129,7 +138,7 @@ object CrashRetention {
                 .filter { isOwned(it.name, policy) }
                 .sortedWith(
                     compareByDescending<CrashDirEntry> { evictionTier(it, nowMs, policy) }
-                        .thenByDescending { writeTimeMs(it, policy)?.coerceAtMost(nowMs) ?: Long.MIN_VALUE }
+                        .thenByDescending { effectiveWriteTimeMs(it, policy)?.coerceAtMost(nowMs) ?: Long.MIN_VALUE }
                         .thenByDescending { nameMillis(it.name, policy)?.coerceAtMost(nowMs) ?: Long.MIN_VALUE },
                 )
 
@@ -152,17 +161,22 @@ object CrashRetention {
 
     /**
      * True when the directory already fits both bounds, letting a caller on the crash path skip
-     * sorting. Uses the same capped claim as [selectOverflowOwned] so the two cannot disagree.
+     * sorting; true guarantees [selectOverflowOwned] returns empty. Pass it the same [keepNames]
+     * and [policy], or this charges protected records a budget the selector excuses and reports
+     * over cap on every write near the ceiling while the trim then evicts nothing.
      *
-     * Every owned entry counts, undatable ones included: an entry excluded from the caps is
-     * outside every bound at once and leaks for the life of the install.
+     * Every owned entry counts toward the record cap, undatable ones included: an entry excluded
+     * from the caps is outside every bound at once and leaks for the life of the install.
      */
     fun isWithinCaps(
         entries: List<CrashDirEntry>,
+        keepNames: Set<String> = emptySet(),
         policy: CrashRetentionPolicy = defaultPolicy,
     ): Boolean {
         val owned = entries.filter { isOwned(it.name, policy) }
-        val claimed = owned.sumOf { minOf(it.lengthBytes, policy.maxRecordBytes) }
+        val claimed =
+            owned.filterNot { it.name in keepNames }
+                .sumOf { minOf(it.lengthBytes, policy.maxRecordBytes) }
         return owned.size <= policy.maxRecordCount && claimed <= policy.maxTotalBytes
     }
 
@@ -187,7 +201,7 @@ object CrashRetention {
         val legacy = entries.size - otlp
         val summary =
             entries.take(sampleSize).joinToString(separator = "; ") { entry ->
-                val age = writeTimeMs(entry, policy)?.let { nowMs - it } ?: "unknown"
+                val age = effectiveWriteTimeMs(entry, policy)?.let { nowMs - it } ?: "unknown"
                 "name=${entry.name} bytes=${entry.lengthBytes} ageMs=$age"
             }
         val truncated =
@@ -209,7 +223,7 @@ object CrashRetention {
         nowMs: Long,
         policy: CrashRetentionPolicy,
     ): Boolean {
-        val writtenMs = writeTimeMs(entry, policy) ?: return false
+        val writtenMs = effectiveWriteTimeMs(entry, policy) ?: return false
         return writtenMs - nowMs > policy.maxReadAgeMillis
     }
 
@@ -219,7 +233,7 @@ object CrashRetention {
         nowMs: Long,
         policy: CrashRetentionPolicy,
     ): Boolean {
-        val writtenMs = writeTimeMs(entry, policy) ?: return false
+        val writtenMs = effectiveWriteTimeMs(entry, policy) ?: return false
         return nowMs - writtenMs > policy.maxReadAgeMillis
     }
 
@@ -238,25 +252,20 @@ object CrashRetention {
         when {
             isUnrecoverablyFutureDated(entry, nowMs, policy) -> 0
             isPastReadAge(entry, nowMs, policy) -> 1
-            writeTimeMs(entry, policy) == null -> 2
+            effectiveWriteTimeMs(entry, policy) == null -> 2
             else -> 3
         }
 
-    private fun writeTimeMs(
-        entry: CrashDirEntry,
-        policy: CrashRetentionPolicy,
-    ): Long? = entry.lastModifiedMs?.takeIf { it > 0 } ?: nameMillis(entry.name, policy)
-
     /**
-     * Write time carried by a record's own name: leading millis for an owned
-     * `{millis}-{uuid}{ownedSuffix}`, the whole name for a legacy bare-millis foreign record.
-     * A foreign name of any other shape is not an epoch reading and must not be read as one.
+     * Write time carried by a record's own name: leading millis for this policy's own schemes,
+     * complete or interrupted; the whole name for a legacy bare-millis foreign record. Any other
+     * foreign shape is not an epoch reading — `3-tmp.dat` is an in-flight file, not a 1970 one.
      */
     private fun nameMillis(
         name: String,
         policy: CrashRetentionPolicy,
     ): Long? =
-        if (isOwned(name, policy)) {
+        if (isOwned(name, policy) || name.endsWith(policy.ownedTempSuffix)) {
             name.substringBefore('-').toLongOrNull()?.takeIf { it > 0 }
         } else {
             name.toLongOrNull()?.takeIf { it > 0 }

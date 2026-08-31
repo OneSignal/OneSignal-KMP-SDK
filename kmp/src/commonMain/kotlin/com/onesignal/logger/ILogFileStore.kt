@@ -42,6 +42,9 @@ data class StoredLogFile(
  *
  * - refuse writes larger than
  *   [com.onesignal.logger.crash.CrashRetentionPolicy.maxRecordBytes] in [save];
+ * - name interrupted writes with
+ *   [com.onesignal.logger.crash.CrashRetentionPolicy.ownedTempSuffix], so a write the process
+ *   died during is still datable and therefore still reclaimable;
  * - run *both* [com.onesignal.logger.crash.CrashRetention.selectExpiredOwned] and
  *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned] on every path that scans
  *   the directory, not only after a write. Overflow alone leaves an expired record that fits

@@ -34,6 +34,10 @@ class CrashRetentionTest {
     private fun undatable(name: String, bytes: Long = 1L) =
         CrashDirEntry(name, lastModifiedMs = null, lengthBytes = bytes)
 
+    /** An interrupted write with unreadable attributes: foreign, but its own name still dates it. */
+    private fun interruptedWrite(ageMs: Long) =
+        CrashDirEntry("${now - ageMs}-a${policy.ownedTempSuffix}", lastModifiedMs = null, lengthBytes = 1)
+
     // ===== ownership =====
 
     @Test
@@ -102,6 +106,63 @@ class CrashRetentionTest {
         assertEquals(
             emptyList(),
             CrashRetention.selectUnrecognized(listOf(entry), nowMs = now, minAgeMillis = 5_000),
+        )
+    }
+
+    @Test
+    fun an_interrupted_write_stays_datable_while_a_foreign_name_of_the_same_shape_does_not() {
+        // Both stores name the temp file `{millis}-{uuid}.otlp.tmp`. Undatable it is foreign
+        // with no age, so `selectUnrecognized` — the only pass that reaps it — never can, and
+        // an interrupted write is stranded for the life of the install. Attributes unreadable
+        // is the case that matters: that is every Apple entry before first unlock.
+        val interrupted = interruptedWrite(ageMs = 600_000)
+        val otherWriter = undatable("3-tmp.dat")
+
+        assertEquals(now - 600_000, CrashRetention.effectiveWriteTimeMs(interrupted))
+        assertNull(CrashRetention.effectiveWriteTimeMs(otherWriter))
+
+        val reaped =
+            CrashRetention.selectUnrecognized(
+                listOf(interrupted, otherWriter),
+                nowMs = now,
+                minAgeMillis = 5_000,
+            )
+
+        assertEquals(listOf(interrupted.name), reaped.map { it.name })
+    }
+
+    @Test
+    fun an_interrupted_write_is_still_foreign_and_still_protected_by_the_age_gate() {
+        // Datable must not mean owned: a half-written record can never be read, and it must not
+        // hold a count slot or budget against complete ones. And the write that just started is
+        // dated seconds ago, so the gate protects it from the sweep that reaps its stale siblings.
+        val fresh = interruptedWrite(ageMs = 100)
+
+        assertFalse(CrashRetention.isOwned(fresh.name))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(listOf(fresh), nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(listOf(fresh), nowMs = now))
+        assertEquals(
+            emptyList(),
+            CrashRetention.selectUnrecognized(listOf(fresh), nowMs = now, minAgeMillis = 5_000),
+        )
+    }
+
+    @Test
+    fun effectiveWriteTimeMs_dates_a_record_under_the_caller_s_own_policy() {
+        // The public entry point used to hardcode the default policy, so a store with its own
+        // suffix had `selectExpiredOwned` date and expire records that its `minAgeMillis` read
+        // gate — calling this — saw as permanently undatable and withheld forever.
+        val custom = policy.copy(ownedSuffix = ".osrec")
+        val entry = CrashDirEntry("${now - 600_000}-abc.osrec", lastModifiedMs = null, lengthBytes = 1)
+
+        assertEquals(now - 600_000, CrashRetention.effectiveWriteTimeMs(entry, custom))
+        assertEquals(
+            listOf(entry.name),
+            CrashRetention.selectExpiredOwned(
+                listOf(entry),
+                nowMs = now + policy.maxReadAgeMillis,
+                policy = custom,
+            ).map { it.name },
         )
     }
 
@@ -702,6 +763,36 @@ class CrashRetentionTest {
 
         assertFalse(CrashRetention.isWithinCaps(entries))
         assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now).isNotEmpty())
+    }
+
+    @Test
+    fun isWithinCaps_excuses_protected_claims_exactly_as_the_selector_does() {
+        // Five records at 500 KiB against a 2 MiB budget, newest in flight. Charged the
+        // protected claim the check reports over cap while the selector, which charges only the
+        // four unprotected, keeps everything — so the crash path sorts the whole directory and
+        // deletes nothing. Not transient: the newest record is protected on every write.
+        val entries =
+            (1..5).map { owned("$it-a.otlp", ageMs = it * 1_000L, bytes = 500L * 1024) }
+        val inFlight = setOf("1-a.otlp")
+
+        assertTrue(CrashRetention.isWithinCaps(entries, inFlight))
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = inFlight))
+
+        // The control: excusing protected claims is not excusing the budget. The same five
+        // records with the write settled are over cap, and the selector agrees.
+        assertFalse(CrashRetention.isWithinCaps(entries))
+        assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now).isNotEmpty())
+    }
+
+    @Test
+    fun isWithinCaps_counts_protected_records_against_the_record_cap() {
+        // They claim no bytes but they do hold count slots, so the cheap exit must not skip a
+        // trim the selector would perform.
+        val entries = (1..policy.maxRecordCount + 1).map { owned("$it-a.otlp", ageMs = it * 1_000L) }
+        val inFlight = setOf("1-a.otlp")
+
+        assertFalse(CrashRetention.isWithinCaps(entries, inFlight))
+        assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = inFlight).isNotEmpty())
     }
 
     @Test
