@@ -3,8 +3,7 @@ package com.onesignal.logger
 /**
  * A stored crash record on disk.
  *
- * @property id opaque identifier (the platform decides what this is — e.g. a file
- *   name). Used to [ILogFileStore.read] and [ILogFileStore.delete] the entry.
+ * @property id opaque platform-chosen identifier, as accepted by [ILogFileStore.delete].
  * @property bytes the encoded payload that was written.
  */
 data class StoredLogFile(
@@ -21,90 +20,40 @@ data class StoredLogFile(
 }
 
 /**
- * Platform-agnostic durable store for crash records.
+ * Platform-agnostic durable store for crash records, one encoded OTLP/protobuf payload each.
+ * Implementations must be safe to call from a crash path: cheap, no heavy initialization.
  *
- * Each record is one encoded OTLP/protobuf payload, a format this module owns entirely, so
- * the same logic works on any platform providing simple file primitives.
+ * It is a bounded cache, not a queue, so an implementation must:
  *
- * Implementations must be safe to call from a crash path (i.e. cheap, no heavy
- * initialization).
- *
- * ## Retention is required, not optional
- *
- * This is a bounded cache, not a queue: without bounds a record that never uploads is re-read
- * and re-sent on every launch for the life of the install.
- *
- * [com.onesignal.logger.crash.CrashRetention] supplies the policy so every platform behaves
- * identically. Hold one [com.onesignal.logger.crash.CrashRetentionPolicy] instance —
- * [com.onesignal.logger.crash.CrashRetention.defaultPolicy] unless you have reason to differ —
- * and pass the same one everywhere so its bounds cannot drift between call sites. An
- * implementation is expected to:
- *
- * - refuse writes larger than
- *   [com.onesignal.logger.crash.CrashRetentionPolicy.maxRecordBytes] in [save];
- * - name interrupted writes with
- *   [com.onesignal.logger.crash.CrashRetentionPolicy.ownedTempSuffix], so a write the process
- *   died during is still datable and therefore still reclaimable;
+ * - hold one [com.onesignal.logger.crash.CrashRetentionPolicy] and pass it everywhere, so bounds cannot drift;
+ * - refuse writes over [com.onesignal.logger.crash.CrashRetentionPolicy.maxRecordBytes], and name interrupted
+ *   writes with [com.onesignal.logger.crash.CrashRetentionPolicy.ownedTempSuffix] so they stay reclaimable;
  * - run *both* [com.onesignal.logger.crash.CrashRetention.selectExpiredOwned] and
- *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned] on every path that scans
- *   the directory, not only after a write. Overflow alone leaves an expired record that fits
- *   under the caps on disk forever; expiry alone leaves an unbounded backlog of in-window
- *   records. Order between them does not change which still-uploadable records survive —
- *   overflow ranks anything already past a read gate below everything else, so it sheds those
- *   first either way — but running expiry first keeps overflow from doing work on entries that
- *   are already going away;
- * - keep reclaimed entries out of [listReadable] in the same pass.
+ *   [com.onesignal.logger.crash.CrashRetention.selectOverflowOwned] on every path that scans the directory,
+ *   and keep what they reclaim out of [listReadable] in the same pass. Overflow alone leaves an expired
+ *   record that fits under the caps on disk forever; expiry alone leaves an unbounded backlog.
  *
- * ## Unreadable modification times
- *
- * A platform that cannot read a file's modification time must report `null` on
- * [com.onesignal.logger.crash.CrashDirEntry.lastModifiedMs] rather than substituting a
- * timestamp; any number it invents is read back as an age, and `0` reads as maximum age, which
- * deletes live records. Attributes being unreadable while the directory still lists is normal,
- * not exotic: on Apple platforms data protection makes it so on every reboot until first
- * unlock.
- *
- * Age must always be taken from [com.onesignal.logger.crash.CrashRetention.effectiveWriteTimeMs]
- * — including the `minAgeMillis` gate in [listReadable] and in [deleteUnrecognizedEntries] —
- * never from `lastModifiedMs` directly. It falls back to the millis in the record's own name,
- * which this store's naming scheme guarantees for anything it wrote, so an unreadable timestamp
- * costs no accuracy. Deriving age two different ways lets one clock withhold a record from
- * readers while another reclaims it.
- *
- * An entry that is undatable even so is still listed: it counts toward the caps and stays
- * evictable, but no age gate selects it — retention never expires it, [listReadable] must not
- * treat it as having cleared `minAgeMillis`, and [deleteUnrecognizedEntries] must not reap it as
- * a stale foreign file.
+ * Report `null` on [com.onesignal.logger.crash.CrashDirEntry.lastModifiedMs] when a modification time cannot be
+ * read, never a substitute: any number reads back as an age, and `0` reads as maximum age, deleting live records.
+ * Take every age, including the `minAgeMillis` gates in [listReadable] and [deleteUnrecognizedEntries], from
+ * [com.onesignal.logger.crash.CrashRetention.effectiveWriteTimeMs], or one clock withholds a record another
+ * reclaims. An entry it cannot date is still listed and still counts toward the caps, but no age gate selects it.
  */
 interface ILogFileStore {
     /**
-     * Persists [bytes] under a newly generated entry.
+     * Persists [bytes] under a newly generated entry; `false` means a swallowed I/O failure.
      *
-     * Intentionally NOT a suspend function: the only caller is the crash sink, which
-     * runs on the crashing thread inside the uncaught-exception handler and must
-     * complete the write synchronously before the process dies. Implementations must
-     * keep it cheap and never offload to another thread/queue on this path.
-     *
-     * @return `true` when the bytes were durably written; `false` on swallowed I/O
-     *   failure so callers can avoid logging a false "saved" success.
-     *
-     * This method intentionally has no [Throws] annotation. Kotlin/Native imports a
-     * throwing Boolean-returning Objective-C requirement that Swift cannot implement;
-     * persistence failures are represented by the return value instead.
+     * Deliberately neither `suspend` nor `@Throws`: this runs on the crashing thread inside the
+     * uncaught-exception handler, so it must complete synchronously and never offload, and Kotlin/Native
+     * exports a throwing Boolean-returning requirement that Swift cannot implement.
      */
     fun save(bytes: ByteArray): Boolean
 
     /**
-     * Returns all readable entries whose age is at least [minAgeMillis]. The age
-     * gate mirrors `minFileAgeForReadMillis` from the old pipeline: it guarantees
-     * we never read a file that may still be mid-write from the crashing process.
-     *
-     * Implementations should apply retention here before materializing payloads, so an
-     * over-cap or expired backlog is reclaimed rather than loaded and re-sent.
-     *
-     * Suspends so implementations can perform the (blocking) directory scan and reads
-     * on a background dispatcher — keeping the shared upload pipeline off the caller's
-     * thread on every platform, and bridging to Swift `async` on iOS.
+     * Readable entries whose age is at least [minAgeMillis], so a file the crashing process may still be
+     * writing is never read. Apply retention here before materializing payloads, or an over-cap backlog is
+     * loaded and re-sent rather than reclaimed. Suspends so the scan and reads stay off the caller's thread
+     * and to bridge to Swift `async`.
      */
     @Throws(Exception::class)
     suspend fun listReadable(minAgeMillis: Long): List<StoredLogFile>
@@ -114,25 +63,12 @@ interface ILogFileStore {
     suspend fun delete(id: String)
 
     /**
-     * Deletes on-disk entries this store does not own (e.g. legacy OpenTelemetry
-     * bare-millis files left in a shared crash directory) whose age is at least
-     * [minAgeMillis].
+     * Deletes entries this store does not own (e.g. legacy OpenTelemetry bare-millis files in a shared crash
+     * directory) whose age is at least [minAgeMillis]; anything younger may be another writer's in-flight
+     * file and must survive. Owned records are preserved *as a class* except those retention has
+     * disqualified, and this is the only scan that runs when remote logging is disabled, so it is the sole
+     * chance to bound a directory that is never otherwise read.
      *
-     * Foreign/unrecognized files younger than [minAgeMillis] must be preserved so an
-     * in-flight write by another writer is not deleted mid-write. Callers typically pass
-     * [ILoggerPlatformProvider.minFileAgeForReadMillis] for the same safety margin used by
-     * [listReadable].
-     *
-     * Owned records are preserved here *as a class* — a failed upload or a record still under
-     * the age gate must survive to be retried. The exceptions are the ones retention has
-     * disqualified: entries past the age ceiling or beyond the accumulation caps are no longer
-     * uploadable or no longer affordable, and reclaiming them is this method's other job. This
-     * is also the only scan that runs when remote logging is disabled, so it is the sole
-     * opportunity to bound a directory that is never otherwise read.
-     *
-     * Default is a no-op for test doubles / platforms with no shared-directory legacy.
-     *
-     * @param minAgeMillis minimum age before a foreign file may be deleted
      * @return number of unrecognized entries deleted
      */
     @Throws(Exception::class)
