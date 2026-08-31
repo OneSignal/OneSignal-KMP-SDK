@@ -162,8 +162,8 @@ object CrashRetention {
     /**
      * True when the directory already fits both bounds, letting a caller on the crash path skip
      * sorting; true guarantees [selectOverflowOwned] returns empty. Pass it the same [keepNames]
-     * and [policy], or this charges protected records a budget the selector excuses and reports
-     * over cap on every write near the ceiling while the trim then evicts nothing.
+     * and [policy], or this charges protected records a claim the selector excuses and reports
+     * over cap on writes the trim then does nothing about.
      *
      * Every owned entry counts toward the record cap, undatable ones included: an entry excluded
      * from the caps is outside every bound at once and leaks for the life of the install.

@@ -770,7 +770,7 @@ class CrashRetentionTest {
         // Five records at 500 KiB against a 2 MiB budget, newest in flight. Charged the
         // protected claim the check reports over cap while the selector, which charges only the
         // four unprotected, keeps everything — so the crash path sorts the whole directory and
-        // deletes nothing. Not transient: the newest record is protected on every write.
+        // deletes nothing.
         val entries =
             (1..5).map { owned("$it-a.otlp", ageMs = it * 1_000L, bytes = 500L * 1024) }
         val inFlight = setOf("1-a.otlp")
