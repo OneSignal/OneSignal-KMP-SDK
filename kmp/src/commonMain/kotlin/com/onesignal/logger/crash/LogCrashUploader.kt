@@ -25,13 +25,20 @@ class LogCrashUploader internal constructor(
     private val logger: ILogger,
 ) {
     /**
-     * Starts the uploader. No-op when remote logging is disabled (NONE / null level).
+     * Starts the uploader. No-op when remote logging is disabled, either by the kill switch or by
+     * a NONE / null level.
      */
     @Throws(Exception::class)
     suspend fun start() {
         val remoteLogLevel = platformProvider.remoteLogLevel
-        if (remoteLogLevel == null || remoteLogLevel == "NONE") {
-            logger.info("LogCrashUploader: remote logging disabled (level: $remoteLogLevel)")
+        val isRemoteLoggingEnabled = platformProvider.isRemoteLoggingEnabled
+        // Logging can be revoked while a usable level stays cached, so both have to agree before
+        // anything leaves the device.
+        if (!isRemoteLoggingEnabled || remoteLogLevel == null || remoteLogLevel == "NONE") {
+            logger.info(
+                "LogCrashUploader: remote logging disabled " +
+                    "(enabled: $isRemoteLoggingEnabled, level: $remoteLogLevel)",
+            )
             // Still drop legacy OTEL files so a later module flip is not poisoned.
             purgeUnrecognizedEntries()
             return
