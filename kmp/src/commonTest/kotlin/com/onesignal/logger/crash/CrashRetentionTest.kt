@@ -34,10 +34,10 @@ class CrashRetentionTest {
 
     @Test
     fun isOwned_recognizes_only_the_owned_suffix() {
-        assertTrue(CrashRetention.isOwned("123-abc.otlp"))
-        assertFalse(CrashRetention.isOwned("1784621689841"))
-        assertFalse(CrashRetention.isOwned("stale.tmp"))
-        assertFalse(CrashRetention.isOwned("123-abc.otlp.tmp"))
+        assertTrue(CrashRetention.isOwned("123-abc.otlp", policy = policy))
+        assertFalse(CrashRetention.isOwned("1784621689841", policy = policy))
+        assertFalse(CrashRetention.isOwned("stale.tmp", policy = policy))
+        assertFalse(CrashRetention.isOwned("123-abc.otlp.tmp", policy = policy))
     }
 
     // ===== effective write time =====
@@ -47,12 +47,12 @@ class CrashRetentionTest {
         val entry =
             CrashDirEntry("${now - 900_000}-a.otlp", lastModifiedMs = now - 1_000, lengthBytes = 1)
 
-        assertEquals(now - 1_000, CrashRetention.effectiveWriteTimeMs(entry))
+        assertEquals(now - 1_000, CrashRetention.effectiveWriteTimeMs(entry, policy = policy))
     }
 
     @Test
     fun effectiveWriteTimeMs_falls_back_to_the_millis_in_the_name() {
-        assertEquals(now - 60_000, CrashRetention.effectiveWriteTimeMs(undatedFile(ageMs = 60_000)))
+        assertEquals(now - 60_000, CrashRetention.effectiveWriteTimeMs(undatedFile(ageMs = 60_000), policy = policy))
     }
 
     @Test
@@ -61,25 +61,25 @@ class CrashRetentionTest {
 
         assertEquals(
             now - 60_000,
-            CrashRetention.effectiveWriteTimeMs(CrashDirEntry(name, lastModifiedMs = 0, lengthBytes = 1)),
+            CrashRetention.effectiveWriteTimeMs(CrashDirEntry(name, lastModifiedMs = 0, lengthBytes = 1), policy = policy),
         )
         assertEquals(
             now - 60_000,
-            CrashRetention.effectiveWriteTimeMs(CrashDirEntry(name, lastModifiedMs = -1, lengthBytes = 1)),
+            CrashRetention.effectiveWriteTimeMs(CrashDirEntry(name, lastModifiedMs = -1, lengthBytes = 1), policy = policy),
         )
     }
 
     @Test
     fun effectiveWriteTimeMs_is_null_when_neither_source_can_date_the_entry() {
-        assertNull(CrashRetention.effectiveWriteTimeMs(undatable("crash-report.otlp")))
+        assertNull(CrashRetention.effectiveWriteTimeMs(undatable("crash-report.otlp"), policy = policy))
     }
 
     @Test
     fun effectiveWriteTimeMs_treats_a_non_positive_name_time_as_unreadable_too() {
         val entry = CrashDirEntry("0-abc.otlp", lastModifiedMs = null, lengthBytes = 1)
 
-        assertNull(CrashRetention.effectiveWriteTimeMs(entry))
-        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(listOf(entry), nowMs = now))
+        assertNull(CrashRetention.effectiveWriteTimeMs(entry, policy = policy))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(listOf(entry), nowMs = now, policy = policy))
     }
 
     @Test
@@ -87,10 +87,10 @@ class CrashRetentionTest {
         // Reading the `3` as an epoch time would make another writer's seconds-old file look reapable.
         val entry = CrashDirEntry("3-tmp.dat", lastModifiedMs = null, lengthBytes = 1)
 
-        assertNull(CrashRetention.effectiveWriteTimeMs(entry))
+        assertNull(CrashRetention.effectiveWriteTimeMs(entry, policy = policy))
         assertEquals(
             emptyList(),
-            CrashRetention.selectUnrecognized(listOf(entry), nowMs = now, minAgeMillis = 5_000),
+            CrashRetention.selectUnrecognized(listOf(entry), nowMs = now, minAgeMillis = 5_000, policy = policy),
         )
     }
 
@@ -100,17 +100,38 @@ class CrashRetentionTest {
         val interrupted = interruptedWrite(ageMs = 600_000)
         val otherWriter = undatable("3-tmp.dat")
 
-        assertEquals(now - 600_000, CrashRetention.effectiveWriteTimeMs(interrupted))
-        assertNull(CrashRetention.effectiveWriteTimeMs(otherWriter))
+        assertEquals(now - 600_000, CrashRetention.effectiveWriteTimeMs(interrupted, policy = policy))
+        assertNull(CrashRetention.effectiveWriteTimeMs(otherWriter, policy = policy))
 
         val reaped =
             CrashRetention.selectUnrecognized(
                 listOf(interrupted, otherWriter),
                 nowMs = now,
                 minAgeMillis = 5_000,
+                policy = policy,
             )
 
         assertEquals(listOf(interrupted.name), reaped.map { it.name })
+    }
+
+    @Test
+    fun the_temp_suffix_alone_does_not_make_an_interrupted_write_reclaimable() {
+        // The suffix only picks the parser; without leading millis nothing can date the file, so it leaks.
+        val prefixed = interruptedWrite(ageMs = 600_000)
+        val unprefixed = undatable("scratch${policy.ownedTempSuffix}")
+
+        assertEquals(now - 600_000, CrashRetention.effectiveWriteTimeMs(prefixed, policy = policy))
+        assertNull(CrashRetention.effectiveWriteTimeMs(unprefixed, policy = policy))
+
+        val reaped =
+            CrashRetention.selectUnrecognized(
+                listOf(prefixed, unprefixed),
+                nowMs = now,
+                minAgeMillis = 5_000,
+                policy = policy,
+            )
+
+        assertEquals(listOf(prefixed.name), reaped.map { it.name })
     }
 
     @Test
@@ -118,12 +139,12 @@ class CrashRetentionTest {
         // Datable must not mean owned: a half-written record can never be read.
         val fresh = interruptedWrite(ageMs = 100)
 
-        assertFalse(CrashRetention.isOwned(fresh.name))
-        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(listOf(fresh), nowMs = now))
-        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(listOf(fresh), nowMs = now))
+        assertFalse(CrashRetention.isOwned(fresh.name, policy = policy))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(listOf(fresh), nowMs = now, policy = policy))
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(listOf(fresh), nowMs = now, keepNames = emptySet(), policy = policy))
         assertEquals(
             emptyList(),
-            CrashRetention.selectUnrecognized(listOf(fresh), nowMs = now, minAgeMillis = 5_000),
+            CrashRetention.selectUnrecognized(listOf(fresh), nowMs = now, minAgeMillis = 5_000, policy = policy),
         )
     }
 
@@ -156,7 +177,7 @@ class CrashRetentionTest {
                 foreign("stale.tmp", ageMs = 60_000),
             )
 
-        val selected = CrashRetention.selectUnrecognized(entries, nowMs = now, minAgeMillis = 5_000)
+        val selected = CrashRetention.selectUnrecognized(entries, nowMs = now, minAgeMillis = 5_000, policy = policy)
 
         assertEquals(listOf("stale-legacy", "stale.tmp"), selected.map { it.name })
     }
@@ -165,7 +186,7 @@ class CrashRetentionTest {
     fun selectUnrecognized_is_empty_when_only_owned_records_exist() {
         val entries = listOf(owned("123-abc.otlp", ageMs = 60_000))
 
-        assertEquals(emptyList(), CrashRetention.selectUnrecognized(entries, now, minAgeMillis = 0))
+        assertEquals(emptyList(), CrashRetention.selectUnrecognized(entries, now, minAgeMillis = 0, policy = policy))
     }
 
     @Test
@@ -177,10 +198,10 @@ class CrashRetentionTest {
                 CrashDirEntry("${now - 100}", lastModifiedMs = null, lengthBytes = 1),
             )
 
-        val selected = CrashRetention.selectUnrecognized(entries, nowMs = now, minAgeMillis = 5_000)
+        val selected = CrashRetention.selectUnrecognized(entries, nowMs = now, minAgeMillis = 5_000, policy = policy)
 
         assertEquals(listOf("${now - 60_000}"), selected.map { it.name })
-        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now, policy = policy))
     }
 
     @Test
@@ -188,7 +209,7 @@ class CrashRetentionTest {
         // The age gate protects another writer's in-flight file; an entry it cannot measure has not cleared it.
         val entries = listOf(undatable("stale.tmp"))
 
-        assertEquals(emptyList(), CrashRetention.selectUnrecognized(entries, nowMs = now, minAgeMillis = 5_000))
+        assertEquals(emptyList(), CrashRetention.selectUnrecognized(entries, nowMs = now, minAgeMillis = 5_000, policy = policy))
     }
 
     // ===== expiry =====
@@ -202,7 +223,7 @@ class CrashRetentionTest {
                 foreign("legacy", ageMs = policy.maxReadAgeMillis * 2),
             )
 
-        val expired = CrashRetention.selectExpiredOwned(entries, nowMs = now)
+        val expired = CrashRetention.selectExpiredOwned(entries, nowMs = now, policy = policy)
 
         assertEquals(listOf("1-a.otlp"), expired.map { it.name })
     }
@@ -211,7 +232,7 @@ class CrashRetentionTest {
     fun selectExpiredOwned_treats_a_record_at_exactly_the_ceiling_as_readable() {
         val entries = listOf(owned("1-a.otlp", ageMs = policy.maxReadAgeMillis))
 
-        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now, policy = policy))
     }
 
     @Test
@@ -219,7 +240,7 @@ class CrashRetentionTest {
         // Negative age: the clock moved back an hour since the record was written.
         val entries = listOf(owned("1-a.otlp", ageMs = -60L * 60 * 1000))
 
-        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now, policy = policy))
     }
 
     @Test
@@ -227,7 +248,7 @@ class CrashRetentionTest {
         // The read gate (now - mtime >= minAge) can never pass, so only expiry will ever remove it.
         val entries = listOf(owned("1-a.otlp", ageMs = -(policy.maxReadAgeMillis + 1)))
 
-        assertEquals(listOf("1-a.otlp"), CrashRetention.selectExpiredOwned(entries, nowMs = now).map { it.name })
+        assertEquals(listOf("1-a.otlp"), CrashRetention.selectExpiredOwned(entries, nowMs = now, policy = policy).map { it.name })
     }
 
     @Test
@@ -235,12 +256,12 @@ class CrashRetentionTest {
         // The boundary belongs to the backwards-clock case, matching the past-side ceiling.
         val entries = listOf(owned("1-a.otlp", ageMs = -policy.maxReadAgeMillis))
 
-        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now, policy = policy))
     }
 
     @Test
     fun selectExpiredOwned_is_empty_for_an_empty_directory() {
-        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(emptyList(), nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(emptyList(), nowMs = now, policy = policy))
     }
 
     @Test
@@ -252,14 +273,14 @@ class CrashRetentionTest {
                 CrashDirEntry("${now - 60_000}-zero.otlp", lastModifiedMs = 0, lengthBytes = 1),
             )
 
-        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now, policy = policy))
     }
 
     @Test
     fun selectExpiredOwned_still_expires_a_stale_record_whose_timestamp_is_unreadable() {
         val entries = listOf(undatedFile(ageMs = policy.maxReadAgeMillis + 1))
 
-        assertEquals(listOf(entries[0].name), CrashRetention.selectExpiredOwned(entries, nowMs = now).map { it.name })
+        assertEquals(listOf(entries[0].name), CrashRetention.selectExpiredOwned(entries, nowMs = now, policy = policy).map { it.name })
     }
 
     @Test
@@ -267,21 +288,21 @@ class CrashRetentionTest {
         // A failed read is not evidence of age, so the caps handle this instead.
         val entries = listOf(undatable("crash-report.otlp"))
 
-        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now, policy = policy))
     }
 
     @Test
     fun selectExpiredOwned_writes_off_a_name_dated_unrecoverably_into_the_future() {
         val entries = listOf(undatedFile(ageMs = -(policy.maxReadAgeMillis + 1)))
 
-        assertEquals(listOf(entries[0].name), CrashRetention.selectExpiredOwned(entries, nowMs = now).map { it.name })
+        assertEquals(listOf(entries[0].name), CrashRetention.selectExpiredOwned(entries, nowMs = now, policy = policy).map { it.name })
     }
 
     @Test
     fun selectExpiredOwned_tolerates_a_name_dated_modestly_into_the_future() {
         val entries = listOf(undatedFile(ageMs = -60_000))
 
-        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now, policy = policy))
     }
 
     // ===== accumulation =====
@@ -290,7 +311,7 @@ class CrashRetentionTest {
     fun selectOverflowOwned_returns_nothing_while_within_both_caps() {
         val entries = (1..3).map { owned("$it-a.otlp", ageMs = it * 1_000L) }
 
-        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(entries, nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = emptySet(), policy = policy))
     }
 
     @Test
@@ -298,7 +319,7 @@ class CrashRetentionTest {
         val max = policy.maxRecordCount
         val entries = (1..max + 2).map { owned("$it-a.otlp", ageMs = it * 1_000L) }
 
-        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now)
+        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = emptySet(), policy = policy)
 
         // Larger index means older, and the result is ordered oldest-first.
         assertEquals(listOf("${max + 2}-a.otlp", "${max + 1}-a.otlp"), evicted.map { it.name })
@@ -311,7 +332,7 @@ class CrashRetentionTest {
             (1..max + 1).map { owned("$it-a.otlp", ageMs = it * 1_000L) } +
                 foreign("legacy", ageMs = 999_000)
 
-        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now)
+        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = emptySet(), policy = policy)
 
         assertFalse(evicted.any { it.name == "legacy" })
     }
@@ -327,7 +348,7 @@ class CrashRetentionTest {
                 owned("2-small.otlp", ageMs = 4_000, bytes = 10),
             )
 
-        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(entries, nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = emptySet(), policy = policy))
     }
 
     @Test
@@ -339,7 +360,7 @@ class CrashRetentionTest {
                 owned("5-does-not-fit.otlp", ageMs = 5_000, bytes = 200_000) +
                 owned("4-still-fits.otlp", ageMs = 6_000, bytes = 40_000)
 
-        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now)
+        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = emptySet(), policy = policy)
 
         assertEquals(listOf("5-does-not-fit.otlp"), evicted.map { it.name })
     }
@@ -351,7 +372,7 @@ class CrashRetentionTest {
             (1..max).map { owned("$it-a.otlp", ageMs = it * 1_000L) } +
                 owned("fresh-a.otlp", ageMs = 999_000)
 
-        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = setOf("fresh-a.otlp"))
+        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = setOf("fresh-a.otlp"), policy = policy)
 
         assertFalse(evicted.any { it.name == "fresh-a.otlp" })
         assertEquals(listOf("$max-a.otlp"), evicted.map { it.name })
@@ -363,7 +384,7 @@ class CrashRetentionTest {
         val entries =
             backlog + owned("fresh-a.otlp", ageMs = 1_000, bytes = policy.maxTotalBytes * 2)
 
-        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = setOf("fresh-a.otlp"))
+        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = setOf("fresh-a.otlp"), policy = policy)
 
         assertEquals(emptyList(), evicted)
     }
@@ -378,7 +399,7 @@ class CrashRetentionTest {
             )
 
         val evicted =
-            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2))
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2), keepNames = emptySet())
 
         assertEquals(listOf("100-a.otlp"), evicted.map { it.name })
     }
@@ -395,7 +416,7 @@ class CrashRetentionTest {
             )
 
         val evicted =
-            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2))
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2), keepNames = emptySet())
 
         assertEquals(listOf("9-zombie.otlp", "100-c.otlp"), evicted.map { it.name })
     }
@@ -410,14 +431,14 @@ class CrashRetentionTest {
             )
 
         val evicted =
-            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2))
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2), keepNames = emptySet())
 
         assertEquals(listOf("100-c.otlp"), evicted.map { it.name })
     }
 
     @Test
     fun selectOverflowOwned_is_empty_for_an_empty_directory() {
-        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(emptyList(), nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(emptyList(), nowMs = now, keepNames = emptySet(), policy = policy))
     }
 
     // ===== accumulation: records whose timestamp is unreadable =====
@@ -432,7 +453,7 @@ class CrashRetentionTest {
             )
 
         val evicted =
-            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2))
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2), keepNames = emptySet())
 
         assertEquals(listOf("100-c.otlp"), evicted.map { it.name })
     }
@@ -449,7 +470,7 @@ class CrashRetentionTest {
             )
 
         val evicted =
-            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2))
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2), keepNames = emptySet())
 
         assertEquals(listOf(zombie.name, "100-c.otlp"), evicted.map { it.name })
     }
@@ -465,6 +486,7 @@ class CrashRetentionTest {
                 listOf(near, far),
                 nowMs = now,
                 policy = policy.copy(maxRecordCount = 1),
+                keepNames = emptySet(),
             )
 
         assertEquals(listOf(far.name), evicted.map { it.name })
@@ -480,7 +502,7 @@ class CrashRetentionTest {
             )
 
         val evicted =
-            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2))
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2), keepNames = emptySet())
 
         assertEquals(listOf("crash-x.otlp"), evicted.map { it.name })
     }
@@ -491,7 +513,7 @@ class CrashRetentionTest {
         val entries = ('a'..'d').map { undatable("crash-$it.otlp") }
 
         val evicted =
-            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2))
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2), keepNames = emptySet())
 
         assertEquals(2, evicted.size)
     }
@@ -503,7 +525,7 @@ class CrashRetentionTest {
         val entries = ages.mapIndexed { index, ageMs -> undatedFile(ageMs = ageMs, tag = "r$index") }
 
         val evicted =
-            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 3))
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 3), keepNames = emptySet())
 
         assertEquals(listOf(entries[2].name, entries[4].name), evicted.map { it.name })
     }
@@ -514,7 +536,7 @@ class CrashRetentionTest {
         val entries = ('a'..'e').map { undatable("crash-$it.otlp") }
 
         val evicted =
-            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 3))
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 3), keepNames = emptySet())
 
         assertEquals(listOf("crash-e.otlp", "crash-d.otlp"), evicted.map { it.name })
     }
@@ -535,6 +557,7 @@ class CrashRetentionTest {
                 entries,
                 nowMs = now,
                 keepNames = setOf("first-flight.otlp", "second-flight.otlp"),
+                policy = policy,
             )
 
         assertEquals(listOf("$max-a.otlp", "${max - 1}-a.otlp"), evicted.map { it.name })
@@ -569,6 +592,7 @@ class CrashRetentionTest {
                 inFlight + backlog,
                 nowMs = now,
                 keepNames = inFlight.mapTo(HashSet()) { it.name },
+                policy = policy,
             )
 
         assertEquals(emptyList(), evicted)
@@ -587,6 +611,7 @@ class CrashRetentionTest {
                 inFlight + backlog,
                 nowMs = now,
                 keepNames = inFlight.mapTo(HashSet()) { it.name },
+                policy = policy,
             )
 
         assertEquals(listOf("5-pending.otlp"), evicted.map { it.name })
@@ -603,11 +628,11 @@ class CrashRetentionTest {
         val fresh = (1..5).map { owned("fresh-$it.otlp", ageMs = it * 1_000L) }
         val listing = expired + fresh
 
-        val expiredNames = CrashRetention.selectExpiredOwned(listing, nowMs = now).map { it.name }.toSet()
+        val expiredNames = CrashRetention.selectExpiredOwned(listing, nowMs = now, policy = policy).map { it.name }.toSet()
         val survivors = listing.filterNot { it.name in expiredNames }
 
         assertEquals(policy.maxRecordCount, expiredNames.size)
-        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(survivors, nowMs = now))
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(survivors, nowMs = now, keepNames = emptySet(), policy = policy))
     }
 
     @Test
@@ -618,16 +643,16 @@ class CrashRetentionTest {
                 owned("stale.otlp", ageMs = policy.maxReadAgeMillis + 60_000) +
                 undatable("crash-x.otlp")
 
-        val evicted = CrashRetention.selectOverflowOwned(listing, nowMs = now)
+        val evicted = CrashRetention.selectOverflowOwned(listing, nowMs = now, keepNames = emptySet(), policy = policy)
 
         assertEquals(listOf("stale.otlp"), evicted.map { it.name })
 
         // And that is exactly what running expiry first would have left.
-        val expiredNames = CrashRetention.selectExpiredOwned(listing, nowMs = now).map { it.name }.toSet()
+        val expiredNames = CrashRetention.selectExpiredOwned(listing, nowMs = now, policy = policy).map { it.name }.toSet()
         assertEquals(setOf("stale.otlp"), expiredNames)
         assertEquals(
             emptyList(),
-            CrashRetention.selectOverflowOwned(listing.filterNot { it.name in expiredNames }, nowMs = now),
+            CrashRetention.selectOverflowOwned(listing.filterNot { it.name in expiredNames }, nowMs = now, keepNames = emptySet(), policy = policy),
         )
     }
 
@@ -638,10 +663,10 @@ class CrashRetentionTest {
         val fresh = (1..60).map { owned("fresh-$it.otlp", ageMs = it * 1_000L) }
         val listing = expired + fresh
 
-        val fromRaw = CrashRetention.selectOverflowOwned(listing, nowMs = now)
-        val expiredNames = CrashRetention.selectExpiredOwned(listing, nowMs = now).map { it.name }.toSet()
+        val fromRaw = CrashRetention.selectOverflowOwned(listing, nowMs = now, keepNames = emptySet(), policy = policy)
+        val expiredNames = CrashRetention.selectExpiredOwned(listing, nowMs = now, policy = policy).map { it.name }.toSet()
         val fromSurvivors =
-            CrashRetention.selectOverflowOwned(listing.filterNot { it.name in expiredNames }, nowMs = now)
+            CrashRetention.selectOverflowOwned(listing.filterNot { it.name in expiredNames }, nowMs = now, keepNames = emptySet(), policy = policy)
 
         val liveFromRaw = fromRaw.filter { it.name.startsWith("fresh-") }
         val liveFromSurvivors = fromSurvivors.filter { it.name.startsWith("fresh-") }
@@ -656,8 +681,8 @@ class CrashRetentionTest {
         // Why both passes are required: being over-age reclaims nothing while the caps are satisfied.
         val listing = listOf(owned("stale.otlp", ageMs = policy.maxReadAgeMillis + 60_000))
 
-        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(listing, nowMs = now))
-        assertEquals(listOf("stale.otlp"), CrashRetention.selectExpiredOwned(listing, nowMs = now).map { it.name })
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(listing, nowMs = now, keepNames = emptySet(), policy = policy))
+        assertEquals(listOf("stale.otlp"), CrashRetention.selectExpiredOwned(listing, nowMs = now, policy = policy).map { it.name })
     }
 
     // ===== cheap-path agreement =====
@@ -665,12 +690,12 @@ class CrashRetentionTest {
     @Test
     fun isWithinCaps_agrees_with_the_selector() {
         val within = (1..3).map { owned("$it-a.otlp", ageMs = it * 1_000L) }
-        assertTrue(CrashRetention.isWithinCaps(within))
-        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(within, nowMs = now))
+        assertTrue(CrashRetention.isWithinCaps(within, keepNames = emptySet(), policy = policy))
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(within, nowMs = now, keepNames = emptySet(), policy = policy))
 
         val overCount = (1..policy.maxRecordCount + 1).map { owned("$it-a.otlp", ageMs = it * 1_000L) }
-        assertFalse(CrashRetention.isWithinCaps(overCount))
-        assertTrue(CrashRetention.selectOverflowOwned(overCount, nowMs = now).isNotEmpty())
+        assertFalse(CrashRetention.isWithinCaps(overCount, keepNames = emptySet(), policy = policy))
+        assertTrue(CrashRetention.selectOverflowOwned(overCount, nowMs = now, keepNames = emptySet(), policy = policy).isNotEmpty())
     }
 
     @Test
@@ -680,16 +705,16 @@ class CrashRetentionTest {
             (1..5).map { owned("$it-a.otlp", ageMs = it * 1_000L, bytes = policy.maxRecordBytes) }
 
         assertTrue(entries.size <= policy.maxRecordCount)
-        assertFalse(CrashRetention.isWithinCaps(entries))
-        assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now).isNotEmpty())
+        assertFalse(CrashRetention.isWithinCaps(entries, keepNames = emptySet(), policy = policy))
+        assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = emptySet(), policy = policy).isNotEmpty())
     }
 
     @Test
     fun isWithinCaps_counts_records_it_cannot_date() {
         val entries = (1..policy.maxRecordCount + 1).map { undatable("crash-$it.otlp") }
 
-        assertFalse(CrashRetention.isWithinCaps(entries))
-        assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now).isNotEmpty())
+        assertFalse(CrashRetention.isWithinCaps(entries, keepNames = emptySet(), policy = policy))
+        assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = emptySet(), policy = policy).isNotEmpty())
     }
 
     @Test
@@ -700,12 +725,12 @@ class CrashRetentionTest {
             (1..5).map { owned("$it-a.otlp", ageMs = it * 1_000L, bytes = 500L * 1024) }
         val inFlight = setOf("1-a.otlp")
 
-        assertTrue(CrashRetention.isWithinCaps(entries, inFlight))
-        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = inFlight))
+        assertTrue(CrashRetention.isWithinCaps(entries, inFlight, policy = policy))
+        assertEquals(emptyList(), CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = inFlight, policy = policy))
 
         // The control: excusing protected claims is not excusing the budget.
-        assertFalse(CrashRetention.isWithinCaps(entries))
-        assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now).isNotEmpty())
+        assertFalse(CrashRetention.isWithinCaps(entries, keepNames = emptySet(), policy = policy))
+        assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = emptySet(), policy = policy).isNotEmpty())
     }
 
     @Test
@@ -714,8 +739,8 @@ class CrashRetentionTest {
         val entries = (1..policy.maxRecordCount + 1).map { owned("$it-a.otlp", ageMs = it * 1_000L) }
         val inFlight = setOf("1-a.otlp")
 
-        assertFalse(CrashRetention.isWithinCaps(entries, inFlight))
-        assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = inFlight).isNotEmpty())
+        assertFalse(CrashRetention.isWithinCaps(entries, inFlight, policy = policy))
+        assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = inFlight, policy = policy).isNotEmpty())
     }
 
     @Test
@@ -723,7 +748,7 @@ class CrashRetentionTest {
         // Otherwise one huge inherited record makes the crash path sort and trim on every write.
         val entries = listOf(owned("huge.otlp", ageMs = 1_000, bytes = policy.maxTotalBytes * 4))
 
-        assertTrue(CrashRetention.isWithinCaps(entries))
+        assertTrue(CrashRetention.isWithinCaps(entries, keepNames = emptySet(), policy = policy))
     }
 
     // ===== inventory =====
@@ -738,6 +763,7 @@ class CrashRetentionTest {
                 entries = emptyList(),
                 nowMs = now,
                 maxSample = 20,
+                policy = policy,
             ),
         )
     }
@@ -757,6 +783,7 @@ class CrashRetentionTest {
                 entries = entries,
                 nowMs = now,
                 maxSample = 5,
+                policy = policy,
             )
 
         assertTrue(line.contains("total=25 otlp=3 legacy=22"), line)
@@ -777,6 +804,7 @@ class CrashRetentionTest {
                 entries = entries,
                 nowMs = now,
                 maxSample = -1,
+                policy = policy,
             )
 
         assertTrue(line.contains("total=1 otlp=1 legacy=0"), line)
@@ -793,6 +821,7 @@ class CrashRetentionTest {
                 entries = listOf(undatedFile(ageMs = 60_000), undatable("crash-x.otlp")),
                 nowMs = now,
                 maxSample = 2,
+                policy = policy,
             )
 
         assertTrue(line.contains("ageMs=60000"), line)

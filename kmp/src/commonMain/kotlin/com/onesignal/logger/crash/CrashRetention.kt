@@ -1,12 +1,8 @@
 package com.onesignal.logger.crash
 
 /**
- * One entry in a platform's crash directory.
- *
- * @property name the real on-disk name, not a display label: ownership and write time are read from it.
- * @property lastModifiedMs filesystem write time in epoch millis, or `null` if unreadable. Never substitute a
- *   placeholder; any number reads back as an age. Take age from [CrashRetention.effectiveWriteTimeMs] instead.
- * @property lengthBytes size on disk.
+ * One entry in a platform's crash directory; [name] is the real on-disk name, since ownership and age
+ * are read from it. Report an unreadable [lastModifiedMs] as `null`: any placeholder reads back as an age.
  */
 data class CrashDirEntry(
     val name: String,
@@ -15,14 +11,8 @@ data class CrashDirEntry(
 )
 
 /**
- * The bounds [CrashRetention] enforces; most callers use [CrashRetention.defaultPolicy].
- *
- * @property maxReadAgeMillis how long an owned record stays eligible for upload.
- * @property maxRecordCount record-count ceiling.
- * @property maxTotalBytes byte budget across owned records. Bounds *claim*, not bytes on disk: each record is
- *   charged at most [maxRecordBytes], so oversized records can occupy more while still counting as within cap.
- * @property maxRecordBytes largest payload a store should write.
- * @property ownedSuffix suffix marking a record this SDK wrote; anything else is foreign.
+ * The bounds [CrashRetention] enforces; most callers use [CrashRetention.defaultPolicy]. [maxTotalBytes]
+ * bounds *claim*, not bytes on disk: each record is charged at most [maxRecordBytes].
  */
 data class CrashRetentionPolicy(
     val maxReadAgeMillis: Long = 72L * 60 * 60 * 1000,
@@ -31,45 +21,40 @@ data class CrashRetentionPolicy(
     val maxRecordBytes: Long = 512L * 1024,
     val ownedSuffix: String = ".otlp",
 ) {
-    /** Foreign, so it is never read, but still datable. Stores must name temp files with this or they leak. */
+    /**
+     * Foreign, so never read. Datable only when the name also leads with `{millis}-`: a store must use this
+     * suffix *and* that prefix for an interrupted write to stay reclaimable.
+     */
     val ownedTempSuffix: String get() = "$ownedSuffix.tmp"
 }
 
 /**
- * Retention policy for locally-buffered crash records, shared by every platform implementing
- * [com.onesignal.logger.ILogFileStore]. Pure: callers pass the directory listing and the current
- * time, then apply the returned decisions with their own I/O.
+ * Pure retention decisions for locally-buffered crash records, shared by every platform's log file store.
+ * Never default a parameter here: an omission that still compiles reinstates the bug it was added to fix.
  */
 object CrashRetention {
     val defaultPolicy: CrashRetentionPolicy = CrashRetentionPolicy()
 
-    fun isOwned(name: String, policy: CrashRetentionPolicy = defaultPolicy): Boolean = name.endsWith(policy.ownedSuffix)
+    fun isOwned(name: String, policy: CrashRetentionPolicy): Boolean = name.endsWith(policy.ownedSuffix)
 
     /**
-     * The single source of age for every decision here: the filesystem write time, else the millis
-     * in the record's own name, else `null`. A non-positive reading from *either* source counts as
-     * unreadable.
-     *
-     * `null` means undatable: never age-expired, but still counted by [isWithinCaps] and still
-     * evictable by [selectOverflowOwned]. Platforms must gate reads on this rather than on
-     * [CrashDirEntry.lastModifiedMs], under the same [policy] their selectors use, or one clock
-     * withholds a record another reclaims.
+     * The single source of age: filesystem time, else leading millis in the name, else `null`. Never gate on
+     * [CrashDirEntry.lastModifiedMs]; use the selectors' own [policy]. `null` never expires but is still capped.
      */
     fun effectiveWriteTimeMs(
         entry: CrashDirEntry,
-        policy: CrashRetentionPolicy = defaultPolicy,
+        policy: CrashRetentionPolicy,
     ): Long? = entry.lastModifiedMs?.takeIf { it > 0 } ?: nameMillis(entry.name, policy)
 
     /**
-     * Foreign entries old enough to reclaim; owned records are never selected (see [selectExpiredOwned]).
-     * The age gate keeps another writer's in-flight file from being deleted mid-write, so an undatable
-     * entry is never selected: it cannot clear a gate it cannot be measured against.
+     * Foreign entries old enough to reclaim; owned ones never (see [selectExpiredOwned]). An undatable entry
+     * is never selected: it cannot clear the age gate that protects another writer's in-flight file.
      */
     fun selectUnrecognized(
         entries: List<CrashDirEntry>,
         nowMs: Long,
         minAgeMillis: Long,
-        policy: CrashRetentionPolicy = defaultPolicy,
+        policy: CrashRetentionPolicy,
     ): List<CrashDirEntry> =
         entries.filter { entry ->
             val writtenMs = effectiveWriteTimeMs(entry, policy)
@@ -79,14 +64,13 @@ object CrashRetention {
         }
 
     /**
-     * Owned entries no longer worth uploading: past [CrashRetentionPolicy.maxReadAgeMillis], or dated so
-     * far ahead they can never become readable. An undatable entry is never selected, since a failed read
-     * is not evidence of age; bounding those falls to [selectOverflowOwned].
+     * Owned entries past [CrashRetentionPolicy.maxReadAgeMillis], or dated so far ahead they never become
+     * readable. An undatable entry is left to [selectOverflowOwned]: a failed read is not evidence of age.
      */
     fun selectExpiredOwned(
         entries: List<CrashDirEntry>,
         nowMs: Long,
-        policy: CrashRetentionPolicy = defaultPolicy,
+        policy: CrashRetentionPolicy,
     ): List<CrashDirEntry> =
         entries.filter { entry ->
             isOwned(entry.name, policy) &&
@@ -94,20 +78,14 @@ object CrashRetention {
         }
 
     /**
-     * Owned entries to evict so the directory fits the count and byte bounds, returned oldest-first.
-     *
-     * Size alone never evicts: a record that does not fit the remaining budget is skipped rather than
-     * treated as a cutoff, so one outsized payload cannot displace the backlog.
-     *
-     * [keepNames] are records callers are currently writing and are never evicted. They claim no byte
-     * budget, so what holds is [CrashRetentionPolicy.maxTotalBytes] across unprotected survivors *plus*
-     * whatever [keepNames] hold; they do still occupy count slots.
+     * Owned entries to evict so the directory fits both bounds, oldest-first; one too big for the remaining
+     * budget is skipped, never a cutoff. [keepNames] are in-flight: never evicted, exempt from bytes, still counted.
      */
     fun selectOverflowOwned(
         entries: List<CrashDirEntry>,
         nowMs: Long,
-        keepNames: Set<String> = emptySet(),
-        policy: CrashRetentionPolicy = defaultPolicy,
+        keepNames: Set<String>,
+        policy: CrashRetentionPolicy,
     ): List<CrashDirEntry> {
         // Ties break on the millis in the name: filesystem timestamps can be coarser than write order.
         val newestFirst =
@@ -137,16 +115,13 @@ object CrashRetention {
     }
 
     /**
-     * Cheap exit for the crash path: true guarantees [selectOverflowOwned] returns empty, so the caller can
-     * skip sorting. Pass it the same [keepNames] and [policy] or the two stop measuring the same directory.
-     *
-     * Every owned entry counts toward the record cap, undatable ones included: an entry excluded from the
-     * caps is outside every bound at once and leaks for the life of the install.
+     * Cheap exit: true guarantees [selectOverflowOwned] returns empty, so the caller skips sorting. Pass the
+     * same [keepNames] and [policy], or the two stop measuring the same directory. Undatable entries count.
      */
     fun isWithinCaps(
         entries: List<CrashDirEntry>,
-        keepNames: Set<String> = emptySet(),
-        policy: CrashRetentionPolicy = defaultPolicy,
+        keepNames: Set<String>,
+        policy: CrashRetentionPolicy,
     ): Boolean {
         val owned = entries.filter { isOwned(it.name, policy) }
         val claimed =
@@ -165,7 +140,7 @@ object CrashRetention {
         entries: List<CrashDirEntry>,
         nowMs: Long,
         maxSample: Int,
-        policy: CrashRetentionPolicy = defaultPolicy,
+        policy: CrashRetentionPolicy,
     ): String {
         if (entries.isEmpty()) {
             return "OneSignal: Crash storage inventory [$label] ($path): empty"
@@ -185,9 +160,8 @@ object CrashRetention {
     }
 
     /**
-     * True when [entry] is dated too far ahead to be a clock artifact. Read gates use
-     * `nowMs - writeTime >= minAgeMillis`, which such a record never satisfies, so it would hold a count
-     * slot for life while being unreadable. Modest skew stays under the threshold and is tolerated.
+     * Dated too far ahead to be clock skew: such a record never satisfies a `nowMs - writeTime` gate, so it
+     * would hold a count slot for life while unreadable. Modest skew stays under the threshold.
      */
     private fun isUnrecoverablyFutureDated(
         entry: CrashDirEntry,
@@ -225,9 +199,8 @@ object CrashRetention {
         }
 
     /**
-     * Write time carried by a record's own name: leading millis for this policy's own schemes, complete or
-     * interrupted; the whole name for a legacy bare-millis foreign record. Any other foreign shape is not an
-     * epoch reading, since `3-tmp.dat` is an in-flight file, not a 1970 one.
+     * Write time from the name: leading millis for this policy's own schemes, complete or interrupted; the
+     * whole name for a legacy bare-millis foreign record. `3-tmp.dat` is in-flight, not a 1970 record.
      */
     private fun nameMillis(
         name: String,
