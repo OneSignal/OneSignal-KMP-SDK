@@ -3,6 +3,7 @@ package com.onesignal.logger.crash
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -11,7 +12,9 @@ import kotlin.test.assertTrue
  * [CrashDirEntry]s and applying the returned decisions.
  */
 class CrashRetentionTest {
-    private val now = 1_000_000L
+    // A real epoch reading, not a small number: ages beyond the retention window have to stay
+    // on the positive side of the epoch, since a non-positive write time means "unreadable".
+    private val now = 1_784_621_689_841L
     private val policy = CrashRetention.defaultPolicy
 
     private fun owned(name: String, ageMs: Long, bytes: Long = 1L) =
@@ -19,6 +22,17 @@ class CrashRetentionTest {
 
     private fun foreign(name: String, ageMs: Long, bytes: Long = 1L) =
         CrashDirEntry(name, lastModifiedMs = now - ageMs, lengthBytes = bytes)
+
+    /**
+     * A record whose attributes cannot be read but whose name still carries its write time —
+     * the shape both stores produce, and what an Apple device lists before first unlock.
+     */
+    private fun undatedFile(ageMs: Long, tag: String = "a", bytes: Long = 1L) =
+        CrashDirEntry("${now - ageMs}-$tag${policy.ownedSuffix}", lastModifiedMs = null, lengthBytes = bytes)
+
+    /** Neither source can date this: attributes unreadable and no millis in the name. */
+    private fun undatable(name: String, bytes: Long = 1L) =
+        CrashDirEntry(name, lastModifiedMs = null, lengthBytes = bytes)
 
     // ===== ownership =====
 
@@ -28,6 +42,44 @@ class CrashRetentionTest {
         assertFalse(CrashRetention.isOwned("1784621689841"))
         assertFalse(CrashRetention.isOwned("stale.tmp"))
         assertFalse(CrashRetention.isOwned("123-abc.otlp.tmp"))
+    }
+
+    // ===== effective write time =====
+
+    @Test
+    fun effectiveWriteTimeMs_prefers_the_filesystem_over_the_name() {
+        // The filesystem is the only one of the two that follows a rewrite, so it decides
+        // whenever it is readable and the name is a fallback rather than a second opinion.
+        val entry =
+            CrashDirEntry("${now - 900_000}-a.otlp", lastModifiedMs = now - 1_000, lengthBytes = 1)
+
+        assertEquals(now - 1_000, CrashRetention.effectiveWriteTimeMs(entry))
+    }
+
+    @Test
+    fun effectiveWriteTimeMs_falls_back_to_the_millis_in_the_name() {
+        assertEquals(now - 60_000, CrashRetention.effectiveWriteTimeMs(undatedFile(ageMs = 60_000)))
+    }
+
+    @Test
+    fun effectiveWriteTimeMs_treats_a_non_positive_filesystem_time_as_unreadable() {
+        // `File.lastModified()` and a nil `contentModificationDate` both used to arrive as 0,
+        // which read back as maximum age. Nothing this SDK writes predates the epoch.
+        val name = "${now - 60_000}-a.otlp"
+
+        assertEquals(
+            now - 60_000,
+            CrashRetention.effectiveWriteTimeMs(CrashDirEntry(name, lastModifiedMs = 0, lengthBytes = 1)),
+        )
+        assertEquals(
+            now - 60_000,
+            CrashRetention.effectiveWriteTimeMs(CrashDirEntry(name, lastModifiedMs = -1, lengthBytes = 1)),
+        )
+    }
+
+    @Test
+    fun effectiveWriteTimeMs_is_null_when_neither_source_can_date_the_entry() {
+        assertNull(CrashRetention.effectiveWriteTimeMs(undatable("crash-report.otlp")))
     }
 
     // ===== foreign entries =====
@@ -52,6 +104,32 @@ class CrashRetentionTest {
         val entries = listOf(owned("123-abc.otlp", ageMs = 60_000))
 
         assertEquals(emptyList(), CrashRetention.selectUnrecognized(entries, now, minAgeMillis = 0))
+    }
+
+    @Test
+    fun selectUnrecognized_dates_a_legacy_bare_millis_name_from_the_name_itself() {
+        // A pre-upgrade otel name parses under the same rule. Harmless — ownership is decided
+        // by suffix, so it stays foreign — and it is the only pass that ever reclaims these,
+        // so an unreadable timestamp must not exempt them.
+        val entries =
+            listOf(
+                CrashDirEntry("${now - 60_000}", lastModifiedMs = null, lengthBytes = 1),
+                CrashDirEntry("${now - 100}", lastModifiedMs = null, lengthBytes = 1),
+            )
+
+        val selected = CrashRetention.selectUnrecognized(entries, nowMs = now, minAgeMillis = 5_000)
+
+        assertEquals(listOf("${now - 60_000}"), selected.map { it.name })
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
+    }
+
+    @Test
+    fun selectUnrecognized_leaves_an_undatable_foreign_file_alone() {
+        // The age gate exists to protect another writer's in-flight file. An entry that cannot
+        // be measured against it has not cleared it.
+        val entries = listOf(undatable("stale.tmp"))
+
+        assertEquals(emptyList(), CrashRetention.selectUnrecognized(entries, nowMs = now, minAgeMillis = 5_000))
     }
 
     // ===== expiry =====
@@ -108,6 +186,56 @@ class CrashRetentionTest {
     @Test
     fun selectExpiredOwned_is_empty_for_an_empty_directory() {
         assertEquals(emptyList(), CrashRetention.selectExpiredOwned(emptyList(), nowMs = now))
+    }
+
+    @Test
+    fun selectExpiredOwned_retains_a_recent_record_whose_timestamp_is_unreadable() {
+        // The data-loss case. An Apple device lists this directory before first unlock with
+        // attributes unreadable, on every reboot; a minute-old crash captured before that
+        // reboot must survive to be uploaded, not be reclaimed as maximally old.
+        val entries =
+            listOf(
+                undatedFile(ageMs = 60_000, tag = "nil"),
+                CrashDirEntry("${now - 60_000}-zero.otlp", lastModifiedMs = 0, lengthBytes = 1),
+            )
+
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
+    }
+
+    @Test
+    fun selectExpiredOwned_still_expires_a_stale_record_whose_timestamp_is_unreadable() {
+        // The other direction: the name dates it past the ceiling, so the age bound keeps
+        // applying instead of quietly deferring to accumulation pressure.
+        val entries = listOf(undatedFile(ageMs = policy.maxReadAgeMillis + 1))
+
+        assertEquals(listOf(entries[0].name), CrashRetention.selectExpiredOwned(entries, nowMs = now).map { it.name })
+    }
+
+    @Test
+    fun selectExpiredOwned_never_expires_a_record_it_cannot_date_at_all() {
+        // No timestamp and no millis in the name. A failed read is not evidence of age, so
+        // this is left to the accumulation caps rather than deleted.
+        val entries = listOf(undatable("crash-report.otlp"))
+
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
+    }
+
+    @Test
+    fun selectExpiredOwned_writes_off_a_name_dated_unrecoverably_into_the_future() {
+        // Platforms gate reads on the same effective time, so a name this far ahead can never
+        // pass one — it would hold a count slot for life while being unreadable.
+        val entries = listOf(undatedFile(ageMs = -(policy.maxReadAgeMillis + 1)))
+
+        assertEquals(listOf(entries[0].name), CrashRetention.selectExpiredOwned(entries, nowMs = now).map { it.name })
+    }
+
+    @Test
+    fun selectExpiredOwned_tolerates_a_name_dated_modestly_into_the_future() {
+        // Ordinary clock skew between the writing session and this one. The record is real and
+        // recent; it just waits for the clock to agree it is old.
+        val entries = listOf(undatedFile(ageMs = -60_000))
+
+        assertEquals(emptyList(), CrashRetention.selectExpiredOwned(entries, nowMs = now))
     }
 
     // ===== accumulation =====
@@ -173,27 +301,27 @@ class CrashRetentionTest {
     }
 
     @Test
-    fun keepName_retains_the_just_written_record_even_when_it_sorts_oldest() {
+    fun keepNames_retains_the_just_written_record_even_when_it_sorts_oldest() {
         val max = policy.maxRecordCount
         val entries =
             (1..max).map { owned("$it-a.otlp", ageMs = it * 1_000L) } +
                 owned("fresh-a.otlp", ageMs = 999_000)
 
-        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepName = "fresh-a.otlp")
+        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = setOf("fresh-a.otlp"))
 
         assertFalse(evicted.any { it.name == "fresh-a.otlp" })
         assertEquals(listOf("$max-a.otlp"), evicted.map { it.name })
     }
 
     @Test
-    fun an_oversized_keepName_does_not_evict_the_pending_backlog() {
-        // Charging keepName its full length started the budget over cap, so every sibling
-        // failed the remaining-budget check and the whole backlog was evicted.
+    fun an_oversized_protected_record_does_not_evict_the_pending_backlog() {
+        // Charging a protected name its full length started the budget over cap, so every
+        // sibling failed the remaining-budget check and the whole backlog was evicted.
         val backlog = (1..4).map { owned("$it-small.otlp", ageMs = it * 10_000L, bytes = 400_000) }
         val entries =
             backlog + owned("fresh-a.otlp", ageMs = 1_000, bytes = policy.maxTotalBytes * 2)
 
-        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepName = "fresh-a.otlp")
+        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = setOf("fresh-a.otlp"))
 
         assertFalse(evicted.any { it.name == "fresh-a.otlp" })
         assertEquals(listOf("4-small.otlp"), evicted.map { it.name })
@@ -254,6 +382,170 @@ class CrashRetentionTest {
     @Test
     fun selectOverflowOwned_is_empty_for_an_empty_directory() {
         assertEquals(emptyList(), CrashRetention.selectOverflowOwned(emptyList(), nowMs = now))
+    }
+
+    // ===== accumulation: records whose timestamp is unreadable =====
+
+    @Test
+    fun selectOverflowOwned_ranks_an_undated_record_by_the_millis_in_its_name() {
+        // Its name places it newest, so it keeps its slot ahead of two records the filesystem
+        // could date — an unreadable timestamp costs it no standing.
+        val entries =
+            listOf(
+                owned("300-a.otlp", ageMs = 5_000),
+                undatedFile(ageMs = 1_000, tag = "undated"),
+                owned("100-c.otlp", ageMs = 10_000),
+            )
+
+        val evicted =
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2))
+
+        assertEquals(listOf("100-c.otlp"), evicted.map { it.name })
+    }
+
+    @Test
+    fun selectOverflowOwned_evicts_a_name_dated_unrecoverably_into_the_future_first() {
+        val zombie = undatedFile(ageMs = -(policy.maxReadAgeMillis + 1), tag = "zombie")
+        val entries =
+            listOf(
+                zombie,
+                owned("300-a.otlp", ageMs = 1_000),
+                owned("200-b.otlp", ageMs = 2_000),
+                owned("100-c.otlp", ageMs = 3_000),
+            )
+
+        val evicted =
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2))
+
+        assertEquals(listOf(zombie.name, "100-c.otlp"), evicted.map { it.name })
+    }
+
+    @Test
+    fun selectOverflowOwned_does_not_privilege_the_more_absurdly_future_name() {
+        // Both names are ahead of now, so both sort as "now" and listing order decides. Left
+        // uncapped, the one further ahead would outrank the other purely for being wronger.
+        val near = undatedFile(ageMs = -10_000, tag = "near")
+        val far = undatedFile(ageMs = -200_000, tag = "far")
+
+        val evicted =
+            CrashRetention.selectOverflowOwned(
+                listOf(near, far),
+                nowMs = now,
+                policy = policy.copy(maxRecordCount = 1),
+            )
+
+        assertEquals(listOf(far.name), evicted.map { it.name })
+    }
+
+    @Test
+    fun selectOverflowOwned_evicts_an_undatable_record_before_one_it_can_date() {
+        // Not evidence the record is worthless, but it has no claim on a slot against a record
+        // we can actually place in time.
+        val entries =
+            listOf(
+                undatable("crash-x.otlp"),
+                owned("300-a.otlp", ageMs = 1_000),
+                owned("100-c.otlp", ageMs = 3_000),
+            )
+
+        val evicted =
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2))
+
+        assertEquals(listOf("crash-x.otlp"), evicted.map { it.name })
+    }
+
+    @Test
+    fun selectOverflowOwned_still_evicts_records_it_cannot_date() {
+        // Boundedness does not depend on being able to date anything: an entry left out of the
+        // caps would be outside every bound at once and leak for the life of the install.
+        val entries = ('a'..'d').map { undatable("crash-$it.otlp") }
+
+        val evicted =
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 2))
+
+        assertEquals(2, evicted.size)
+    }
+
+    @Test
+    fun selectOverflowOwned_trims_the_oldest_when_no_timestamp_is_readable() {
+        // Every entry at once, which is what an Apple device lists before first unlock. The
+        // millis in the names still order them, so the trim is by write order, not by luck.
+        val ages = listOf(3_000L, 1_000L, 5_000L, 2_000L, 4_000L)
+        val entries = ages.mapIndexed { index, ageMs -> undatedFile(ageMs = ageMs, tag = "r$index") }
+
+        val evicted =
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 3))
+
+        assertEquals(listOf(entries[2].name, entries[4].name), evicted.map { it.name })
+    }
+
+    @Test
+    fun selectOverflowOwned_trims_only_the_excess_when_nothing_can_be_dated() {
+        // The degenerate case: no timestamps and no millis in any name. Only the overflow goes,
+        // in listing order — the directory is not wiped for being undatable.
+        val entries = ('a'..'e').map { undatable("crash-$it.otlp") }
+
+        val evicted =
+            CrashRetention.selectOverflowOwned(entries, nowMs = now, policy = policy.copy(maxRecordCount = 3))
+
+        assertEquals(listOf("crash-e.otlp", "crash-d.otlp"), evicted.map { it.name })
+    }
+
+    // ===== accumulation: protected names =====
+
+    @Test
+    fun keepNames_protects_every_name_in_the_set_at_once() {
+        // One protected name is not enough: concurrent crashing threads each hold a record
+        // open, and evicting any of them corrupts a crash being captured right now.
+        val max = policy.maxRecordCount
+        val entries =
+            (1..max).map { owned("$it-a.otlp", ageMs = it * 1_000L) } +
+                owned("first-flight.otlp", ageMs = 900_000) +
+                owned("second-flight.otlp", ageMs = 800_000)
+
+        val evicted =
+            CrashRetention.selectOverflowOwned(
+                entries,
+                nowMs = now,
+                keepNames = setOf("first-flight.otlp", "second-flight.otlp"),
+            )
+
+        assertEquals(listOf("$max-a.otlp", "${max - 1}-a.otlp"), evicted.map { it.name })
+    }
+
+    @Test
+    fun keepNames_are_retained_even_when_the_set_alone_exceeds_the_caps() {
+        // Deliberate: the caps may be overshot while writes are in flight. The alternative is
+        // deleting a file another thread still has open. The overshoot ends when those writes
+        // finish and the next scan trims normally.
+        val inFlight = (1..3).map { owned("flight-$it.otlp", ageMs = it * 1_000L) }
+        val settled = (1..2).map { owned("$it-a.otlp", ageMs = 10_000L * it) }
+
+        val evicted =
+            CrashRetention.selectOverflowOwned(
+                inFlight + settled,
+                nowMs = now,
+                keepNames = inFlight.mapTo(HashSet()) { it.name },
+                policy = policy.copy(maxRecordCount = 2),
+            )
+
+        assertEquals(setOf("1-a.otlp", "2-a.otlp"), evicted.map { it.name }.toSet())
+    }
+
+    @Test
+    fun oversized_protected_records_are_charged_only_their_capped_share() {
+        // Charging protected names their full length would put the budget over cap before the
+        // loop began, failing every sibling's remaining-budget check.
+        val protectedNames = setOf("p1-flight.otlp", "p2-flight.otlp")
+        val entries =
+            listOf(
+                owned("p1-flight.otlp", ageMs = 1_000, bytes = policy.maxTotalBytes * 2),
+                owned("p2-flight.otlp", ageMs = 2_000, bytes = policy.maxTotalBytes * 2),
+            ) + (1..4).map { owned("$it-small.otlp", ageMs = it * 10_000L, bytes = 400_000) }
+
+        val evicted = CrashRetention.selectOverflowOwned(entries, nowMs = now, keepNames = protectedNames)
+
+        assertEquals(listOf("4-small.otlp", "3-small.otlp"), evicted.map { it.name })
     }
 
     // ===== composition: both passes must run; order does not decide survivors =====
@@ -336,6 +628,16 @@ class CrashRetentionTest {
     }
 
     @Test
+    fun isWithinCaps_counts_records_it_cannot_date() {
+        // The cheap path has to see the same directory the selector does. An entry left out of
+        // the count is outside every bound: uncounted here, and so never trimmed.
+        val entries = (1..policy.maxRecordCount + 1).map { undatable("crash-$it.otlp") }
+
+        assertFalse(CrashRetention.isWithinCaps(entries))
+        assertTrue(CrashRetention.selectOverflowOwned(entries, nowMs = now).isNotEmpty())
+    }
+
+    @Test
     fun isWithinCaps_charges_oversized_records_only_their_capped_share() {
         // One huge inherited record must not make the directory look over budget on its own,
         // or a crash path would sort and trim on every single write.
@@ -399,5 +701,22 @@ class CrashRetentionTest {
 
         assertTrue(line.contains("total=1 otlp=1 legacy=0"), line)
         assertTrue(line.contains("…(+1 more)"), line)
+    }
+
+    @Test
+    fun formatInventory_reports_an_age_it_cannot_compute_as_unknown() {
+        // Printing a fabricated age here would make a directory of live records look ancient in
+        // the very logs used to verify retention.
+        val line =
+            CrashRetention.formatInventory(
+                label = "before-upload",
+                path = "/cache/crashes",
+                entries = listOf(undatedFile(ageMs = 60_000), undatable("crash-x.otlp")),
+                nowMs = now,
+                maxSample = 2,
+            )
+
+        assertTrue(line.contains("ageMs=60000"), line)
+        assertTrue(line.contains("name=crash-x.otlp bytes=1 ageMs=unknown"), line)
     }
 }

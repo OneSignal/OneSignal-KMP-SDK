@@ -50,6 +50,27 @@ data class StoredLogFile(
  *   the oldest, so overflow evicts them first either way — but running expiry first keeps
  *   overflow from doing work on entries that are already going away;
  * - keep reclaimed entries out of [listReadable] in the same pass.
+ *
+ * ## Unreadable modification times
+ *
+ * A platform that cannot read a file's modification time must report `null` on
+ * [com.onesignal.logger.crash.CrashDirEntry.lastModifiedMs] rather than substituting a
+ * timestamp; any number it invents is read back as an age, and `0` reads as maximum age, which
+ * deletes live records. Attributes being unreadable while the directory still lists is normal,
+ * not exotic: on Apple platforms data protection makes it so on every reboot until first
+ * unlock.
+ *
+ * Age must always be taken from [com.onesignal.logger.crash.CrashRetention.effectiveWriteTimeMs]
+ * — including the `minAgeMillis` gate in [listReadable] and in [deleteUnrecognizedEntries] —
+ * never from `lastModifiedMs` directly. It falls back to the millis in the record's own name,
+ * which this store's naming scheme guarantees for anything it wrote, so an unreadable timestamp
+ * costs no accuracy. Deriving age two different ways lets one clock withhold a record from
+ * readers while another reclaims it.
+ *
+ * An entry that is undatable even so is still listed: it counts toward the caps and stays
+ * evictable, but no age gate selects it — retention never expires it, [listReadable] must not
+ * treat it as having cleared `minAgeMillis`, and [deleteUnrecognizedEntries] must not reap it as
+ * a stale foreign file.
  */
 interface ILogFileStore {
     /**
