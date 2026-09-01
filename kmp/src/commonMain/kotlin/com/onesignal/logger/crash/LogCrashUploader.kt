@@ -7,17 +7,7 @@ import com.onesignal.logger.ILoggerPlatformProvider
 import kotlinx.coroutines.delay
 import kotlin.coroutines.cancellation.CancellationException
 
-/**
- * Reads locally-buffered crash reports and ships them to OneSignal on the next app
- * start. Mirrors `OtelCrashUploader`, but reads our own simple disk format instead of
- * OpenTelemetry's disk-buffering library.
- *
- * Usage:
- * ```kotlin
- * val uploader = LoggerFactory.createCrashUploader(provider, remote, fileStore, logger)
- * scope.launch { uploader.start() }
- * ```
- */
+/** Reads locally-buffered crash reports and ships them to OneSignal on the next app start. */
 class LogCrashUploader internal constructor(
     private val platformProvider: ILoggerPlatformProvider,
     private val remote: ILogTelemetryRemote,
@@ -25,14 +15,19 @@ class LogCrashUploader internal constructor(
     private val logger: ILogger,
 ) {
     /**
-     * Starts the uploader. No-op when remote logging is disabled (NONE / null level).
+     * Starts the uploader. Uploads nothing when remote logging is disabled, by the kill switch or by a
+     * NONE / null level, but still purges legacy files so a later flip is not poisoned.
      */
     @Throws(Exception::class)
     suspend fun start() {
         val remoteLogLevel = platformProvider.remoteLogLevel
-        if (remoteLogLevel == null || remoteLogLevel == "NONE") {
-            logger.info("LogCrashUploader: remote logging disabled (level: $remoteLogLevel)")
-            // Still drop legacy OTEL files so a later module flip is not poisoned.
+        val isRemoteLoggingEnabled = platformProvider.isRemoteLoggingEnabled
+        // Logging can be revoked while a usable level stays cached, so both must agree.
+        if (!isRemoteLoggingEnabled || remoteLogLevel == null || remoteLogLevel == "NONE") {
+            logger.info(
+                "LogCrashUploader: remote logging disabled " +
+                    "(enabled: $isRemoteLoggingEnabled, level: $remoteLogLevel)",
+            )
             purgeUnrecognizedEntries()
             return
         }
@@ -41,8 +36,7 @@ class LogCrashUploader internal constructor(
             "LogCrashUploader: path=${platformProvider.crashStoragePath} " +
                 "minFileAgeMs=${platformProvider.minFileAgeForReadMillis} level=$remoteLogLevel",
         )
-        // Purge must run even if listReadable/export throws — a messy crash dir is
-        // exactly when leftover legacy files most need reclaiming.
+        // Purge must run even when the upload pass throws: a messy crash dir is when it matters most.
         try {
             internalStart()
         } finally {
@@ -51,11 +45,8 @@ class LogCrashUploader internal constructor(
     }
 
     /**
-     * Sends reports twice for the same reasons as the old uploader:
-     *  1. Send crash reports as soon as possible (app may crash again quickly).
-     *  2. A report from the previous crash may only become readable after
-     *     [ILoggerPlatformProvider.minFileAgeForReadMillis] has elapsed (so we never
-     *     read a file the crashing process may still have been writing).
+     * Two passes: reports go out as early as possible, and one from the previous crash may only become
+     * readable once [ILoggerPlatformProvider.minFileAgeForReadMillis] has elapsed.
      */
     internal suspend fun internalStart() {
         sendReports()
@@ -63,11 +54,7 @@ class LogCrashUploader internal constructor(
         sendReports()
     }
 
-    /**
-     * After owned `*.otlp` uploads finish (or when remote logging is off), remove
-     * leftover files this store does not own — typically bare-millis OTEL
-     * disk-buffering files from when both modules shared one crash directory.
-     */
+    /** Removes leftover files this store does not own, typically bare-millis OTEL disk-buffering files. */
     private suspend fun purgeUnrecognizedEntries() {
         val minAgeMillis = platformProvider.minFileAgeForReadMillis
         val deleted =

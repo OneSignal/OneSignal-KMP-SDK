@@ -163,6 +163,35 @@ class LogCrashTest {
     }
 
     @Test
+    fun uploaderNoOpWhenKillSwitchOffDespiteCachedLevel() = runTest {
+        val provider = FakePlatformProvider(isRemoteLoggingEnabled = false, remoteLogLevel = "ERROR")
+        val store = FakeFileStore()
+        store.seed("owned.otlp", "p".encodeToByteArray(), ageMillis = Long.MAX_VALUE)
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
+        assertEquals(0, http.sentRequests.size)
+        assertTrue(store.deletedIds.isEmpty())
+    }
+
+    @Test
+    fun uploaderPurgesUnrecognizedFilesWhenKillSwitchOffDespiteCachedLevel() = runTest {
+        val provider = FakePlatformProvider(isRemoteLoggingEnabled = false, remoteLogLevel = "ERROR")
+        val store = FakeFileStore()
+        store.seedUnrecognized("legacy-otel-file")
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
+        assertEquals(listOf("legacy-otel-file"), store.purgedUnrecognizedIds)
+    }
+
+    @Test
     fun uploaderPurgesUnrecognizedFilesAfterSuccessfulUploads() = runTest {
         val provider = FakePlatformProvider(minFileAgeForReadMillis = 0)
         val store = FakeFileStore()
