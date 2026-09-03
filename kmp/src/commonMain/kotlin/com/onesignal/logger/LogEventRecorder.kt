@@ -79,7 +79,9 @@ internal class LogEventRecorder(
     override fun detach(telemetry: ILogTelemetry) {
         val detached =
             lock.withLock {
-                if (this.telemetry === telemetry) {
+                // Equality, not identity: a Swift telemetry is wrapped anew each time it crosses into
+                // Kotlin, and only equals (isEqual:) survives the crossing.
+                if (this.telemetry == telemetry) {
                     this.telemetry = null
                     true
                 } else {
