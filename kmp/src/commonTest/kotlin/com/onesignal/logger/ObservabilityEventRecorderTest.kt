@@ -20,16 +20,16 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 @OptIn(ExperimentalCoroutinesApi::class)
-class LogEventRecorderTest {
-    private val event = SdkEvent.DEVICE_GESTURE
+class ObservabilityEventRecorderTest {
+    private val event = ObservabilityEvent.DEVICE_GESTURE
 
     private fun recorder(
         scope: CoroutineScope,
-        gate: ISdkEventGate = ISdkEventGate { true },
+        gate: IObservabilityEventGate = IObservabilityEventGate { true },
         logger: ILogger = RecordingLogger(),
-        maxQueued: Int = LogEventRecorder.DEFAULT_MAX_QUEUED,
-        processCap: Int = LogEventRecorder.DEFAULT_PROCESS_CAP,
-    ) = LogEventRecorder(scope, gate, logger, maxQueued, processCap)
+        maxQueued: Int = ObservabilityEventRecorder.DEFAULT_MAX_QUEUED,
+        processCap: Int = ObservabilityEventRecorder.DEFAULT_PROCESS_CAP,
+    ) = ObservabilityEventRecorder(scope, gate, logger, maxQueued, processCap)
 
     private fun List<LogRecord>.sequence(): List<String?> = map { it.attributes["n"] }
 
@@ -51,7 +51,7 @@ class LogEventRecorderTest {
         val record = telemetry.emitted.single()
         assertEquals(LogSeverity.INFO, record.severity)
         assertEquals("sdk.device_gesture", record.body)
-        assertEquals("sdk.device_gesture", record.attributes[LogEventRecorder.EVENT_NAME_ATTRIBUTE])
+        assertEquals("sdk.device_gesture", record.attributes[ObservabilityEventRecorder.EVENT_NAME_ATTRIBUTE])
         assertEquals("copied", record.attributes["gesture.result"])
         assertNotNull(record.timestampNanos)
         assertTrue(record.boolAttributes.isEmpty())
@@ -86,7 +86,7 @@ class LogEventRecorderTest {
     @Test
     fun recordDropsWhenTheEventFlagIsOff() = runTest {
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, gate = ISdkEventGate { false })
+        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { false })
 
         recorder.record(event)
         recorder.attach(telemetry)
@@ -101,7 +101,7 @@ class LogEventRecorderTest {
         // IMMEDIATE flags flip mid-session; the recorder must not latch the first answer.
         var enabled = false
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, gate = ISdkEventGate { enabled })
+        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { enabled })
         recorder.attach(telemetry)
 
         recorder.record(event, mapOf("n" to "off"))
@@ -114,8 +114,8 @@ class LogEventRecorderTest {
 
     @Test
     fun theGateSeesTheEventItIsAskedAbout() = runTest {
-        val asked = mutableListOf<SdkEvent>()
-        val recorder = recorder(backgroundScope, gate = ISdkEventGate { asked.add(it) })
+        val asked = mutableListOf<ObservabilityEvent>()
+        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { asked.add(it) })
         recorder.attach(RecordingTelemetry())
 
         recorder.record(event)
@@ -216,7 +216,7 @@ class LogEventRecorderTest {
     fun flagOffEventsDoNotConsumeTheCap() = runTest {
         var enabled = false
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, gate = ISdkEventGate { enabled }, processCap = 1)
+        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { enabled }, processCap = 1)
         recorder.attach(telemetry)
 
         recorder.record(event, mapOf("n" to "off"))
@@ -338,7 +338,7 @@ class LogEventRecorderTest {
         val logger = RecordingLogger()
         val telemetry = RecordingTelemetry()
         val recorder =
-            recorder(backgroundScope, gate = ISdkEventGate { throw IllegalStateException("flags boom") }, logger = logger)
+            recorder(backgroundScope, gate = IObservabilityEventGate { throw IllegalStateException("flags boom") }, logger = logger)
         recorder.attach(telemetry)
 
         recorder.record(event)
@@ -366,7 +366,7 @@ class LogEventRecorderTest {
     @Test
     fun expectedDropsLogAtDebugNotWarn() = runTest {
         val logger = RecordingLogger()
-        val recorder = recorder(backgroundScope, gate = ISdkEventGate { false }, logger = logger)
+        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { false }, logger = logger)
 
         recorder.record(event)
 
@@ -377,7 +377,7 @@ class LogEventRecorderTest {
     @Test
     fun aThrowingHostLoggerCannotEscapeRecordOrAttach() = runTest {
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, gate = ISdkEventGate { false }, logger = ThrowingLogger())
+        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { false }, logger = ThrowingLogger())
 
         recorder.record(event)
         recorder.attach(telemetry)

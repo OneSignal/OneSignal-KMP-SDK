@@ -3,13 +3,13 @@ package com.onesignal.logger
 import com.onesignal.features.FeatureFlag
 
 /**
- * The closed set of named events the SDK can ship on the log pipeline: OTLP records carrying
+ * The closed set of events the SDK ships about itself on the log pipeline: OTLP records carrying
  * `event.name`, through the same remote telemetry as log lines and crash records and, like crashes,
  * not filtered by severity. Each entry binds to the catalog flag that turns it on, so a missing or
  * renamed flag fails the build instead of silently never sending. Unfiltered means every entry is
  * a volume decision: ship it default off and turn it on narrow first.
  */
-enum class SdkEvent(
+enum class ObservabilityEvent(
     /** The `event.name` attribute; also the record body. */
     val eventName: String,
     /** Must be enabled for the event to ship. */

@@ -40,7 +40,7 @@ enum class FeatureFlag(
     ),
 
     /**
-     * Ships the `sdk.device_gesture` event ([com.onesignal.logger.SdkEvent.DEVICE_GESTURE]).
+     * Ships the `sdk.device_gesture` event ([com.onesignal.logger.ObservabilityEvent.DEVICE_GESTURE]).
      * IMMEDIATE so turning the event off does not need a cold start.
      */
     SDK_EVENT_DEVICE_GESTURE(

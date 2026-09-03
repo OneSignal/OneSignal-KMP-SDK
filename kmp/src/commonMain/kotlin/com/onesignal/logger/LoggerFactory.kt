@@ -65,15 +65,15 @@ object LoggerFactory {
     ): LogCrashUploader = LogCrashUploader(platformProvider, remote, fileStore, logger)
 
     /**
-     * Creates the recorder named [SdkEvent]s ship through. [gate] is the host's feature-manager
-     * read for [SdkEvent.flag]; the host attaches each remote telemetry it installs through
-     * [ISdkEventRecorder.attach].
+     * Creates the recorder [ObservabilityEvent]s ship through. [gate] is the host's feature-manager
+     * read for [ObservabilityEvent.flag]; the host attaches each remote telemetry it installs through
+     * [IObservabilityEventRecorder.attach].
      */
-    fun createEventRecorder(
-        gate: ISdkEventGate,
+    fun createObservabilityEventRecorder(
+        gate: IObservabilityEventGate,
         logger: ILogger,
-    ): ISdkEventRecorder =
-        LogEventRecorder(
+    ): IObservabilityEventRecorder =
+        ObservabilityEventRecorder(
             scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
             gate = gate,
             logger = logger,

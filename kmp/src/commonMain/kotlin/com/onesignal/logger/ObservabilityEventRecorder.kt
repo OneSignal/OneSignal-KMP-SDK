@@ -7,7 +7,7 @@ import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * Ships named [SdkEvent]s as INFO records carrying `event.name` through whichever remote
+ * Ships [ObservabilityEvent]s as INFO records carrying `event.name` through whichever remote
  * telemetry is attached. Owns the guards so both platforms share them: the flag check, a bounded
  * queue for records made before the telemetry exists, and a per-process cap so a retry loop cannot
  * flood the endpoint. The host owns the flag read through [gate], so no feature manager is needed
@@ -16,13 +16,13 @@ import kotlin.coroutines.cancellation.CancellationException
  * Faults log at WARN and expected drops at DEBUG, through [logger] guarded so that a host logger
  * which itself throws cannot break the never-throws contract of [record].
  */
-internal class LogEventRecorder(
+internal class ObservabilityEventRecorder(
     private val scope: CoroutineScope,
-    private val gate: ISdkEventGate,
+    private val gate: IObservabilityEventGate,
     private val logger: ILogger,
     private val maxQueued: Int = DEFAULT_MAX_QUEUED,
     private val processCap: Int = DEFAULT_PROCESS_CAP,
-) : ISdkEventRecorder {
+) : IObservabilityEventRecorder {
     private val lock = PlatformLock()
     private var telemetry: ILogTelemetry? = null
     private val queued = ArrayList<LogRecord>()
@@ -38,9 +38,9 @@ internal class LogEventRecorder(
         object CapReached : Admission
     }
 
-    override fun record(event: SdkEvent) = record(event, emptyMap())
+    override fun record(event: ObservabilityEvent) = record(event, emptyMap())
 
-    override fun record(event: SdkEvent, attributes: Map<String, String>) {
+    override fun record(event: ObservabilityEvent, attributes: Map<String, String>) {
         try {
             if (!gate.isEnabled(event)) {
                 debug("dropped ${event.eventName}, ${event.flag.key} is off")
@@ -120,7 +120,7 @@ internal class LogEventRecorder(
             }
         }
 
-    private fun toRecord(event: SdkEvent, attributes: Map<String, String>): LogRecord =
+    private fun toRecord(event: ObservabilityEvent, attributes: Map<String, String>): LogRecord =
         LogRecord(
             severity = LogSeverity.INFO,
             body = event.eventName,
@@ -147,7 +147,7 @@ internal class LogEventRecorder(
 
     private fun warn(message: String) {
         try {
-            logger.warn("LogEventRecorder: $message")
+            logger.warn("ObservabilityEventRecorder: $message")
         } catch (_: Throwable) {
             // A throwing host logger must not turn a swallowed fault into a thrown one.
         }
@@ -155,7 +155,7 @@ internal class LogEventRecorder(
 
     private fun debug(message: String) {
         try {
-            logger.debug("LogEventRecorder: $message")
+            logger.debug("ObservabilityEventRecorder: $message")
         } catch (_: Throwable) {
             // Same as warn.
         }
