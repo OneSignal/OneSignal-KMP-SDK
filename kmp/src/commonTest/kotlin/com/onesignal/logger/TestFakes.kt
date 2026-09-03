@@ -128,6 +128,22 @@ internal class FakeFileStore : ILogFileStore {
     }
 }
 
+internal class RecordingTelemetry : ILogTelemetry {
+    val emitted = mutableListOf<LogRecord>()
+
+    /** When set, every [emit] throws it instead of recording. */
+    var emitException: Exception? = null
+
+    override suspend fun emit(record: LogRecord) {
+        emitException?.let { throw it }
+        emitted.add(record)
+    }
+
+    override suspend fun forceFlush() = Unit
+
+    override fun shutdown() = Unit
+}
+
 internal class RecordingLogger : ILogger {
     val messages = mutableListOf<String>()
 

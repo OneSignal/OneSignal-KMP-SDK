@@ -6,6 +6,9 @@ import com.onesignal.logger.crash.LogCrashReporter
 import com.onesignal.logger.crash.LogCrashUploader
 import com.onesignal.logger.internal.LogTelemetryCrashImpl
 import com.onesignal.logger.internal.LogTelemetryRemoteImpl
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 
 /**
  * Composition root for the logger module. Mirrors `OtelFactory`.
@@ -60,4 +63,20 @@ object LoggerFactory {
         fileStore: ILogFileStore,
         logger: ILogger,
     ): LogCrashUploader = LogCrashUploader(platformProvider, remote, fileStore, logger)
+
+    /**
+     * Creates the recorder named [SdkEvent]s ship through. [isEnabled] is the platform's
+     * feature-manager read for [SdkEvent.flag]. The platform's observability lifecycle attaches
+     * the remote telemetry from [createRemoteTelemetry] whenever it installs one; records made
+     * before that queue, bounded, until the sink arrives.
+     */
+    fun createEventRecorder(
+        isEnabled: (SdkEvent) -> Boolean,
+        logger: ILogger,
+    ): ISdkEventRecorder =
+        LogEventRecorder(
+            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
+            isEnabled = isEnabled,
+            logger = logger,
+        )
 }
