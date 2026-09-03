@@ -8,14 +8,24 @@ package com.onesignal.logger
 interface ISdkEventRecorder {
     /**
      * Never throws or blocks, so it is safe from lifecycle callbacks on the main thread. Drops
-     * when the event's flag is off or the session cap is reached; queues, bounded, until remote
-     * telemetry is attached.
+     * when the event's flag is off or the per-process cap is reached; queues, bounded, until
+     * remote telemetry is attached.
      */
-    fun record(event: SdkEvent, attributes: Map<String, String> = emptyMap())
+    fun record(event: SdkEvent, attributes: Map<String, String>)
+
+    /** [record] with no attributes beyond `event.name`. */
+    fun record(event: SdkEvent)
 
     /** Installs or replaces the remote telemetry, then flushes anything queued. */
     fun attach(telemetry: ILogTelemetry)
 
-    /** Later records queue, bounded, until the next [attach]. */
-    fun detach()
+    /**
+     * Removes [telemetry] only if it is the attached one. A host that shares one recorder across
+     * telemetry instances shuts down instances that never won the install, and that must not
+     * detach the one that did.
+     */
+    fun detach(telemetry: ILogTelemetry)
+
+    /** Drops every queued record, for an app-id change. The attached telemetry and the cap stay. */
+    fun reset()
 }

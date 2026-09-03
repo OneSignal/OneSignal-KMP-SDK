@@ -10,15 +10,18 @@ import kotlin.coroutines.cancellation.CancellationException
  * Ships named [SdkEvent]s as INFO records carrying `event.name` through whichever remote
  * telemetry is attached. Owns the guards so both platforms share them: the flag check, a bounded
  * queue for records made before the telemetry exists, and a per-process cap so a retry loop cannot
- * flood the endpoint. [isEnabled] is a function rather than a feature manager so this package does not
- * depend on the features package at runtime.
+ * flood the endpoint. The host owns the flag read through [gate], so no feature manager is needed
+ * here.
+ *
+ * Faults log at WARN and expected drops at DEBUG, through [logger] guarded so that a host logger
+ * which itself throws cannot break the never-throws contract of [record].
  */
 internal class LogEventRecorder(
     private val scope: CoroutineScope,
-    private val isEnabled: (SdkEvent) -> Boolean,
+    private val gate: ISdkEventGate,
     private val logger: ILogger,
     private val maxQueued: Int = DEFAULT_MAX_QUEUED,
-    private val sessionCap: Int = DEFAULT_SESSION_CAP,
+    private val processCap: Int = DEFAULT_PROCESS_CAP,
 ) : ISdkEventRecorder {
     private val lock = PlatformLock()
     private var telemetry: ILogTelemetry? = null
@@ -35,22 +38,23 @@ internal class LogEventRecorder(
         object CapReached : Admission
     }
 
+    override fun record(event: SdkEvent) = record(event, emptyMap())
+
     override fun record(event: SdkEvent, attributes: Map<String, String>) {
         try {
-            if (!isEnabled(event)) {
-                logger.debug("LogEventRecorder: dropped ${event.eventName}, ${event.flag.key} is off")
+            if (!gate.isEnabled(event)) {
+                debug("dropped ${event.eventName}, ${event.flag.key} is off")
                 return
             }
             val record = toRecord(event, attributes)
             when (val admission = admit(record)) {
                 is Admission.Emit -> emit(admission.telemetry, listOf(record))
-                Admission.Queued -> logger.debug("LogEventRecorder: queued ${event.eventName} until remote telemetry is attached")
-                Admission.QueueFull -> logger.debug("LogEventRecorder: dropped ${event.eventName}, pre-attach queue is full")
-                Admission.CapReached ->
-                    logger.debug("LogEventRecorder: dropped ${event.eventName}, session cap of $sessionCap reached")
+                Admission.Queued -> debug("queued ${event.eventName} until remote telemetry is attached")
+                Admission.QueueFull -> debug("dropped ${event.eventName}, pre-attach queue is full")
+                Admission.CapReached -> debug("dropped ${event.eventName}, per-process cap of $processCap reached")
             }
         } catch (t: Throwable) {
-            logger.debug("LogEventRecorder: failed to record ${event.eventName}: ${t.message}")
+            warn("failed to record ${event.eventName}: ${t.message}")
         }
     }
 
@@ -63,17 +67,36 @@ internal class LogEventRecorder(
                     queued.clear()
                     copy
                 }
+            debug("remote telemetry attached, flushing ${pending.size} queued event(s)")
             if (pending.isNotEmpty()) {
-                logger.debug("LogEventRecorder: remote telemetry attached, flushing ${pending.size} queued event(s)")
                 emit(telemetry, pending)
             }
         } catch (t: Throwable) {
-            logger.debug("LogEventRecorder: failed to attach remote telemetry: ${t.message}")
+            warn("failed to attach remote telemetry: ${t.message}")
         }
     }
 
-    override fun detach() {
-        lock.withLock { telemetry = null }
+    override fun detach(telemetry: ILogTelemetry) {
+        val detached =
+            lock.withLock {
+                if (this.telemetry === telemetry) {
+                    this.telemetry = null
+                    true
+                } else {
+                    false
+                }
+            }
+        debug(if (detached) "remote telemetry detached" else "ignored a detach of telemetry that is not attached")
+    }
+
+    override fun reset() {
+        val dropped =
+            lock.withLock {
+                val count = queued.size
+                queued.clear()
+                count
+            }
+        debug("reset, dropped $dropped queued event(s)")
     }
 
     /** Kept separate so the lock covers the decision only, not the emit. */
@@ -81,7 +104,7 @@ internal class LogEventRecorder(
         lock.withLock {
             val current = telemetry
             when {
-                admitted >= sessionCap -> Admission.CapReached
+                admitted >= processCap -> Admission.CapReached
                 current != null -> {
                     admitted++
                     Admission.Emit(current)
@@ -114,9 +137,25 @@ internal class LogEventRecorder(
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    logger.debug("LogEventRecorder: failed to emit ${record.body}: ${e.message}")
+                    warn("failed to emit ${record.body}: ${e.message}")
                 }
             }
+        }
+    }
+
+    private fun warn(message: String) {
+        try {
+            logger.warn("LogEventRecorder: $message")
+        } catch (_: Throwable) {
+            // A throwing host logger must not turn a swallowed fault into a thrown one.
+        }
+    }
+
+    private fun debug(message: String) {
+        try {
+            logger.debug("LogEventRecorder: $message")
+        } catch (_: Throwable) {
+            // Same as warn.
         }
     }
 
@@ -124,6 +163,6 @@ internal class LogEventRecorder(
         /** OTel log-event convention: a record carrying this attribute is an event. */
         const val EVENT_NAME_ATTRIBUTE = "event.name"
         const val DEFAULT_MAX_QUEUED = 20
-        const val DEFAULT_SESSION_CAP = 20
+        const val DEFAULT_PROCESS_CAP = 20
     }
 }

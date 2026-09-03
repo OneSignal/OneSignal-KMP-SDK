@@ -4,9 +4,16 @@ import com.onesignal.logger.attributes.LogFieldsPerEvent
 import com.onesignal.logger.attributes.LogFieldsTopLevel
 import com.onesignal.logger.internal.LogTelemetryRemoteImpl
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.job
+import kotlinx.coroutines.joinAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -18,13 +25,19 @@ class LogEventRecorderTest {
 
     private fun recorder(
         scope: CoroutineScope,
-        isEnabled: (SdkEvent) -> Boolean = { true },
+        gate: ISdkEventGate = ISdkEventGate { true },
         logger: ILogger = RecordingLogger(),
         maxQueued: Int = LogEventRecorder.DEFAULT_MAX_QUEUED,
-        sessionCap: Int = LogEventRecorder.DEFAULT_SESSION_CAP,
-    ) = LogEventRecorder(scope, isEnabled, logger, maxQueued, sessionCap)
+        processCap: Int = LogEventRecorder.DEFAULT_PROCESS_CAP,
+    ) = LogEventRecorder(scope, gate, logger, maxQueued, processCap)
 
     private fun List<LogRecord>.sequence(): List<String?> = map { it.attributes["n"] }
+
+    private fun RecordingLogger.warnings(): List<String> = messages.filter { it.startsWith("W:") }
+
+    private fun RecordingLogger.errors(): List<String> = messages.filter { it.startsWith("E:") }
+
+    // ===== The record shape =====
 
     @Test
     fun recordShipsAnInfoRecordNamedAfterTheEvent() = runTest {
@@ -45,7 +58,7 @@ class LogEventRecorderTest {
     }
 
     @Test
-    fun recordWithoutAttributesCarriesOnlyTheEventName() = runTest {
+    fun theSingleArgumentOverloadCarriesOnlyTheEventName() = runTest {
         val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope)
         recorder.attach(telemetry)
@@ -68,10 +81,12 @@ class LogEventRecorderTest {
         assertEquals("sdk.device_gesture", telemetry.emitted.single().attributes["event.name"])
     }
 
+    // ===== The flag gate =====
+
     @Test
     fun recordDropsWhenTheEventFlagIsOff() = runTest {
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, isEnabled = { false })
+        val recorder = recorder(backgroundScope, gate = ISdkEventGate { false })
 
         recorder.record(event)
         recorder.attach(telemetry)
@@ -86,7 +101,7 @@ class LogEventRecorderTest {
         // IMMEDIATE flags flip mid-session; the recorder must not latch the first answer.
         var enabled = false
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, isEnabled = { enabled })
+        val recorder = recorder(backgroundScope, gate = ISdkEventGate { enabled })
         recorder.attach(telemetry)
 
         recorder.record(event, mapOf("n" to "off"))
@@ -96,6 +111,19 @@ class LogEventRecorderTest {
 
         assertEquals(listOf("on"), telemetry.emitted.sequence())
     }
+
+    @Test
+    fun theGateSeesTheEventItIsAskedAbout() = runTest {
+        val asked = mutableListOf<SdkEvent>()
+        val recorder = recorder(backgroundScope, gate = ISdkEventGate { asked.add(it) })
+        recorder.attach(RecordingTelemetry())
+
+        recorder.record(event)
+
+        assertEquals(listOf(event), asked)
+    }
+
+    // ===== The pre-attach queue =====
 
     @Test
     fun recordsBeforeAttachQueueAndFlushInOrder() = runTest {
@@ -143,9 +171,9 @@ class LogEventRecorderTest {
     }
 
     @Test
-    fun aRecordDroppedByTheFullQueueDoesNotConsumeTheSessionCap() = runTest {
+    fun aRecordDroppedByTheFullQueueDoesNotConsumeTheCap() = runTest {
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, maxQueued = 1, sessionCap = 2)
+        val recorder = recorder(backgroundScope, maxQueued = 1, processCap = 2)
 
         recorder.record(event, mapOf("n" to "1"))
         recorder.record(event, mapOf("n" to "2"))
@@ -156,10 +184,12 @@ class LogEventRecorderTest {
         assertEquals(listOf("1", "3"), telemetry.emitted.sequence())
     }
 
+    // ===== The per-process cap =====
+
     @Test
-    fun theSessionCapStopsFurtherEvents() = runTest {
+    fun theCapStopsFurtherEvents() = runTest {
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, sessionCap = 2)
+        val recorder = recorder(backgroundScope, processCap = 2)
         recorder.attach(telemetry)
 
         repeat(5) { recorder.record(event, mapOf("n" to "$it")) }
@@ -169,9 +199,9 @@ class LogEventRecorderTest {
     }
 
     @Test
-    fun theSessionCapCountsQueuedEvents() = runTest {
+    fun theCapCountsQueuedEvents() = runTest {
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, sessionCap = 2)
+        val recorder = recorder(backgroundScope, processCap = 2)
 
         recorder.record(event, mapOf("n" to "1"))
         recorder.record(event, mapOf("n" to "2"))
@@ -183,10 +213,10 @@ class LogEventRecorderTest {
     }
 
     @Test
-    fun flagOffEventsDoNotConsumeTheSessionCap() = runTest {
+    fun flagOffEventsDoNotConsumeTheCap() = runTest {
         var enabled = false
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, isEnabled = { enabled }, sessionCap = 1)
+        val recorder = recorder(backgroundScope, gate = ISdkEventGate { enabled }, processCap = 1)
         recorder.attach(telemetry)
 
         recorder.record(event, mapOf("n" to "off"))
@@ -198,12 +228,31 @@ class LogEventRecorderTest {
     }
 
     @Test
+    fun theCapHoldsUnderConcurrentRecords() = runTest {
+        // Eight threads racing the admission lock must not let a single extra record through.
+        val telemetry = CountingTelemetry()
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val recorder = recorder(scope, processCap = 20)
+        recorder.attach(telemetry)
+
+        withContext(Dispatchers.Default) {
+            List(8) { launch { repeat(25) { recorder.record(event) } } }.joinAll()
+        }
+        scope.coroutineContext.job.children.toList().joinAll()
+        scope.cancel()
+
+        assertEquals(20, telemetry.count())
+    }
+
+    // ===== Detach, replace, reset =====
+
+    @Test
     fun detachQueuesUntilTheNextAttach() = runTest {
         val first = RecordingTelemetry()
         val second = RecordingTelemetry()
         val recorder = recorder(backgroundScope)
         recorder.attach(first)
-        recorder.detach()
+        recorder.detach(first)
 
         recorder.record(event, mapOf("n" to "1"))
         runCurrent()
@@ -214,6 +263,23 @@ class LogEventRecorderTest {
 
         assertTrue(first.emitted.isEmpty())
         assertEquals(listOf("1"), second.emitted.sequence())
+    }
+
+    @Test
+    fun detachOfTelemetryThatIsNotAttachedIsIgnored() = runTest {
+        // iOS shares one recorder across remote loggers, and a logger that lost the install race
+        // is shut down after the winner started; its detach must not strand the winner.
+        val winner = RecordingTelemetry()
+        val loser = RecordingTelemetry()
+        val recorder = recorder(backgroundScope)
+        recorder.attach(winner)
+
+        recorder.detach(loser)
+        recorder.record(event, mapOf("n" to "1"))
+        runCurrent()
+
+        assertEquals(listOf("1"), winner.emitted.sequence())
+        assertTrue(loser.emitted.isEmpty())
     }
 
     @Test
@@ -233,19 +299,54 @@ class LogEventRecorderTest {
     }
 
     @Test
+    fun resetDropsTheQueueAndKeepsTheAttachedTelemetry() = runTest {
+        val telemetry = RecordingTelemetry()
+        val recorder = recorder(backgroundScope)
+        recorder.record(event, mapOf("n" to "old app"))
+
+        recorder.reset()
+        recorder.attach(telemetry)
+        runCurrent()
+        assertTrue(telemetry.emitted.isEmpty())
+
+        recorder.reset()
+        recorder.record(event, mapOf("n" to "new app"))
+        runCurrent()
+
+        assertEquals(listOf("new app"), telemetry.emitted.sequence())
+    }
+
+    @Test
+    fun resetDoesNotRefundTheCap() = runTest {
+        // The cap guards the process, not the app id; a reset must not hand out a second budget.
+        val telemetry = RecordingTelemetry()
+        val recorder = recorder(backgroundScope, processCap = 1)
+        recorder.record(event, mapOf("n" to "1"))
+
+        recorder.reset()
+        recorder.attach(telemetry)
+        recorder.record(event, mapOf("n" to "2"))
+        runCurrent()
+
+        assertTrue(telemetry.emitted.isEmpty())
+    }
+
+    // ===== Fail-open =====
+
+    @Test
     fun recordSurvivesAThrowingFlagCheck() = runTest {
         val logger = RecordingLogger()
         val telemetry = RecordingTelemetry()
         val recorder =
-            recorder(backgroundScope, isEnabled = { throw IllegalStateException("flags boom") }, logger = logger)
+            recorder(backgroundScope, gate = ISdkEventGate { throw IllegalStateException("flags boom") }, logger = logger)
         recorder.attach(telemetry)
 
         recorder.record(event)
         runCurrent()
 
         assertTrue(telemetry.emitted.isEmpty())
-        assertTrue(logger.messages.any { it.startsWith("D:") && "flags boom" in it })
-        assertTrue(logger.messages.none { it.startsWith("E:") || it.startsWith("W:") })
+        assertTrue(logger.warnings().any { "flags boom" in it })
+        assertTrue(logger.errors().isEmpty())
     }
 
     @Test
@@ -258,8 +359,33 @@ class LogEventRecorderTest {
         recorder.record(event)
         runCurrent()
 
-        assertTrue(logger.messages.any { it.startsWith("D:") && "telemetry boom" in it })
-        assertTrue(logger.messages.none { it.startsWith("E:") || it.startsWith("W:") })
+        assertTrue(logger.warnings().any { "telemetry boom" in it })
+        assertTrue(logger.errors().isEmpty())
+    }
+
+    @Test
+    fun expectedDropsLogAtDebugNotWarn() = runTest {
+        val logger = RecordingLogger()
+        val recorder = recorder(backgroundScope, gate = ISdkEventGate { false }, logger = logger)
+
+        recorder.record(event)
+
+        assertTrue(logger.warnings().isEmpty())
+        assertTrue(logger.messages.any { it.startsWith("D:") && "is off" in it })
+    }
+
+    @Test
+    fun aThrowingHostLoggerCannotEscapeRecordOrAttach() = runTest {
+        val telemetry = RecordingTelemetry()
+        val recorder = recorder(backgroundScope, gate = ISdkEventGate { false }, logger = ThrowingLogger())
+
+        recorder.record(event)
+        recorder.attach(telemetry)
+        recorder.detach(telemetry)
+        recorder.reset()
+        runCurrent()
+
+        assertTrue(telemetry.emitted.isEmpty())
     }
 
     @Test
@@ -287,6 +413,8 @@ class LogEventRecorderTest {
 
         assertEquals(listOf("2"), emitted.sequence())
     }
+
+    // ===== On the wire =====
 
     @Test
     fun eventsShipThroughTheRemoteTelemetryWithPerEventFields() = runTest {
