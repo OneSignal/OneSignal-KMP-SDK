@@ -28,14 +28,14 @@ class LogEventRecorderTest {
 
     @Test
     fun recordShipsAnInfoRecordNamedAfterTheEvent() = runTest {
-        val sink = RecordingTelemetry()
+        val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope)
-        recorder.attach(sink)
+        recorder.attach(telemetry)
 
         recorder.record(event, mapOf("gesture.result" to "copied"))
         runCurrent()
 
-        val record = sink.emitted.single()
+        val record = telemetry.emitted.single()
         assertEquals(LogSeverity.INFO, record.severity)
         assertEquals("sdk.device_gesture", record.body)
         assertEquals("sdk.device_gesture", record.attributes[LogEventRecorder.EVENT_NAME_ATTRIBUTE])
@@ -46,71 +46,71 @@ class LogEventRecorderTest {
 
     @Test
     fun recordWithoutAttributesCarriesOnlyTheEventName() = runTest {
-        val sink = RecordingTelemetry()
+        val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope)
-        recorder.attach(sink)
+        recorder.attach(telemetry)
 
         recorder.record(event)
         runCurrent()
 
-        assertEquals(mapOf("event.name" to "sdk.device_gesture"), sink.emitted.single().attributes)
+        assertEquals(mapOf("event.name" to "sdk.device_gesture"), telemetry.emitted.single().attributes)
     }
 
     @Test
     fun callerAttributesCannotShadowTheEventName() = runTest {
-        val sink = RecordingTelemetry()
+        val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope)
-        recorder.attach(sink)
+        recorder.attach(telemetry)
 
         recorder.record(event, mapOf("event.name" to "something.else"))
         runCurrent()
 
-        assertEquals("sdk.device_gesture", sink.emitted.single().attributes["event.name"])
+        assertEquals("sdk.device_gesture", telemetry.emitted.single().attributes["event.name"])
     }
 
     @Test
     fun recordDropsWhenTheEventFlagIsOff() = runTest {
-        val sink = RecordingTelemetry()
+        val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope, isEnabled = { false })
 
         recorder.record(event)
-        recorder.attach(sink)
+        recorder.attach(telemetry)
         recorder.record(event)
         runCurrent()
 
-        assertTrue(sink.emitted.isEmpty())
+        assertTrue(telemetry.emitted.isEmpty())
     }
 
     @Test
     fun theFlagIsReadOnEveryRecord() = runTest {
         // IMMEDIATE flags flip mid-session; the recorder must not latch the first answer.
         var enabled = false
-        val sink = RecordingTelemetry()
+        val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope, isEnabled = { enabled })
-        recorder.attach(sink)
+        recorder.attach(telemetry)
 
         recorder.record(event, mapOf("n" to "off"))
         enabled = true
         recorder.record(event, mapOf("n" to "on"))
         runCurrent()
 
-        assertEquals(listOf("on"), sink.emitted.sequence())
+        assertEquals(listOf("on"), telemetry.emitted.sequence())
     }
 
     @Test
     fun recordsBeforeAttachQueueAndFlushInOrder() = runTest {
-        val sink = RecordingTelemetry()
+        val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope)
 
         recorder.record(event, mapOf("n" to "1"))
         recorder.record(event, mapOf("n" to "2"))
         runCurrent()
-        assertTrue(sink.emitted.isEmpty())
+        assertTrue(telemetry.emitted.isEmpty())
 
-        recorder.attach(sink)
+        recorder.attach(telemetry)
         runCurrent()
 
-        assertEquals(listOf("1", "2"), sink.emitted.sequence())
+        assertEquals(listOf("1", "2"), telemetry.emitted.sequence())
     }
 
     @Test
@@ -129,72 +129,72 @@ class LogEventRecorderTest {
     }
 
     @Test
-    fun thePreSinkQueueIsBounded() = runTest {
-        val sink = RecordingTelemetry()
+    fun thePreAttachQueueIsBounded() = runTest {
+        val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope, maxQueued = 2)
 
         recorder.record(event, mapOf("n" to "1"))
         recorder.record(event, mapOf("n" to "2"))
         recorder.record(event, mapOf("n" to "3"))
-        recorder.attach(sink)
+        recorder.attach(telemetry)
         runCurrent()
 
-        assertEquals(listOf("1", "2"), sink.emitted.sequence())
+        assertEquals(listOf("1", "2"), telemetry.emitted.sequence())
     }
 
     @Test
     fun aRecordDroppedByTheFullQueueDoesNotConsumeTheSessionCap() = runTest {
-        val sink = RecordingTelemetry()
+        val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope, maxQueued = 1, sessionCap = 2)
 
         recorder.record(event, mapOf("n" to "1"))
         recorder.record(event, mapOf("n" to "2"))
-        recorder.attach(sink)
+        recorder.attach(telemetry)
         recorder.record(event, mapOf("n" to "3"))
         runCurrent()
 
-        assertEquals(listOf("1", "3"), sink.emitted.sequence())
+        assertEquals(listOf("1", "3"), telemetry.emitted.sequence())
     }
 
     @Test
     fun theSessionCapStopsFurtherEvents() = runTest {
-        val sink = RecordingTelemetry()
+        val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope, sessionCap = 2)
-        recorder.attach(sink)
+        recorder.attach(telemetry)
 
         repeat(5) { recorder.record(event, mapOf("n" to "$it")) }
         runCurrent()
 
-        assertEquals(listOf("0", "1"), sink.emitted.sequence())
+        assertEquals(listOf("0", "1"), telemetry.emitted.sequence())
     }
 
     @Test
     fun theSessionCapCountsQueuedEvents() = runTest {
-        val sink = RecordingTelemetry()
+        val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope, sessionCap = 2)
 
         recorder.record(event, mapOf("n" to "1"))
         recorder.record(event, mapOf("n" to "2"))
-        recorder.attach(sink)
+        recorder.attach(telemetry)
         recorder.record(event, mapOf("n" to "3"))
         runCurrent()
 
-        assertEquals(listOf("1", "2"), sink.emitted.sequence())
+        assertEquals(listOf("1", "2"), telemetry.emitted.sequence())
     }
 
     @Test
     fun flagOffEventsDoNotConsumeTheSessionCap() = runTest {
         var enabled = false
-        val sink = RecordingTelemetry()
+        val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope, isEnabled = { enabled }, sessionCap = 1)
-        recorder.attach(sink)
+        recorder.attach(telemetry)
 
         recorder.record(event, mapOf("n" to "off"))
         enabled = true
         recorder.record(event, mapOf("n" to "on"))
         runCurrent()
 
-        assertEquals(listOf("on"), sink.emitted.sequence())
+        assertEquals(listOf("on"), telemetry.emitted.sequence())
     }
 
     @Test
@@ -217,7 +217,7 @@ class LogEventRecorderTest {
     }
 
     @Test
-    fun attachReplacesTheSink() = runTest {
+    fun attachReplacesTheTelemetry() = runTest {
         val first = RecordingTelemetry()
         val second = RecordingTelemetry()
         val recorder = recorder(backgroundScope)
@@ -235,37 +235,37 @@ class LogEventRecorderTest {
     @Test
     fun recordSurvivesAThrowingFlagCheck() = runTest {
         val logger = RecordingLogger()
-        val sink = RecordingTelemetry()
+        val telemetry = RecordingTelemetry()
         val recorder =
             recorder(backgroundScope, isEnabled = { throw IllegalStateException("flags boom") }, logger = logger)
-        recorder.attach(sink)
+        recorder.attach(telemetry)
 
         recorder.record(event)
         runCurrent()
 
-        assertTrue(sink.emitted.isEmpty())
+        assertTrue(telemetry.emitted.isEmpty())
         assertTrue(logger.messages.any { it.startsWith("D:") && "flags boom" in it })
         assertTrue(logger.messages.none { it.startsWith("E:") || it.startsWith("W:") })
     }
 
     @Test
-    fun recordSurvivesAThrowingSink() = runTest {
+    fun recordSurvivesAThrowingTelemetry() = runTest {
         val logger = RecordingLogger()
-        val sink = RecordingTelemetry().apply { emitException = IllegalStateException("sink boom") }
+        val telemetry = RecordingTelemetry().apply { emitException = IllegalStateException("telemetry boom") }
         val recorder = recorder(backgroundScope, logger = logger)
-        recorder.attach(sink)
+        recorder.attach(telemetry)
 
         recorder.record(event)
         runCurrent()
 
-        assertTrue(logger.messages.any { it.startsWith("D:") && "sink boom" in it })
+        assertTrue(logger.messages.any { it.startsWith("D:") && "telemetry boom" in it })
         assertTrue(logger.messages.none { it.startsWith("E:") || it.startsWith("W:") })
     }
 
     @Test
     fun aThrowingEmitDoesNotStopTheRestOfAFlush() = runTest {
         val emitted = mutableListOf<LogRecord>()
-        val sink =
+        val telemetry =
             object : ILogTelemetry {
                 private var calls = 0
 
@@ -282,14 +282,14 @@ class LogEventRecorderTest {
         recorder.record(event, mapOf("n" to "1"))
         recorder.record(event, mapOf("n" to "2"))
 
-        recorder.attach(sink)
+        recorder.attach(telemetry)
         runCurrent()
 
         assertEquals(listOf("2"), emitted.sequence())
     }
 
     @Test
-    fun eventsShipThroughTheRemoteSinkWithPerEventFields() = runTest {
+    fun eventsShipThroughTheRemoteTelemetryWithPerEventFields() = runTest {
         val provider = FakePlatformProvider()
         val http = FakeHttpSender()
         val remote =
@@ -320,7 +320,7 @@ class LogEventRecorderTest {
         assertEquals("copied", attributes["gesture.result"])
         assertEquals("subscription_id", attributes["gesture.id_kind"])
         assertEquals("push-789", attributes["gesture.id"])
-        // The per-event fields every record on this sink carries.
+        // The per-event fields every record on this telemetry carries.
         assertEquals("app-123", attributes["ossdk.app_id"])
         assertEquals("foreground", attributes["app.state"])
         val resourceAttrKeys =

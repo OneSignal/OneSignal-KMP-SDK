@@ -40,10 +40,8 @@ enum class FeatureFlag(
     ),
 
     /**
-     * Ships the `sdk.device_gesture` named event ([com.onesignal.logger.SdkEvent.DEVICE_GESTURE])
-     * on the log pipeline. Default off, because a named event skips the severity filter and so
-     * pays its volume on every install it is on for. IMMEDIATE so turning it off takes effect on
-     * the next flags fetch, without a cold start.
+     * Ships the `sdk.device_gesture` event ([com.onesignal.logger.SdkEvent.DEVICE_GESTURE]).
+     * IMMEDIATE so turning the event off does not need a cold start.
      */
     SDK_EVENT_DEVICE_GESTURE(
         "sdk_event_device_gesture_enabled",

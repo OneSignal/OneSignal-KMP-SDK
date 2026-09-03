@@ -65,10 +65,9 @@ object LoggerFactory {
     ): LogCrashUploader = LogCrashUploader(platformProvider, remote, fileStore, logger)
 
     /**
-     * Creates the recorder named [SdkEvent]s ship through. [isEnabled] is the platform's
-     * feature-manager read for [SdkEvent.flag]. The platform's observability lifecycle attaches
-     * the remote telemetry from [createRemoteTelemetry] whenever it installs one; records made
-     * before that queue, bounded, until the sink arrives.
+     * Creates the recorder named [SdkEvent]s ship through. [isEnabled] is the host's
+     * feature-manager read for [SdkEvent.flag]; the host attaches each remote telemetry it installs
+     * through [ISdkEventRecorder.attach].
      */
     fun createEventRecorder(
         isEnabled: (SdkEvent) -> Boolean,

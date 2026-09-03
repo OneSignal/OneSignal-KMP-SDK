@@ -7,19 +7,11 @@ import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 
 /**
- * Ships named [SdkEvent]s as INFO log records carrying `event.name`, through whichever
- * [ILogTelemetry] is attached. The recorder owns the guards on events, so they are written and
- * tested once for both platforms:
- *
- * - The flag check. [isEnabled] is the platform's feature-manager read for [SdkEvent.flag],
- *   taken as a function so this package stays free of the features package at runtime.
- * - The pre-sink queue. Before HYDRATE installs the sink (first launch, params failure), up to
- *   [maxQueued] records wait in memory and [attach] flushes them. Dropped at process end.
- * - The session cap. At most [sessionCap] events ship per process, so a retry loop cannot
- *   flood the log endpoint. A backstop, not a budget.
- *
- * [record] never suspends, waits on I/O or throws: it runs from lifecycle callbacks on the main
- * thread. Emission hops to [scope]; the queue and counters sit behind [lock].
+ * Ships named [SdkEvent]s as INFO records carrying `event.name` through whichever remote
+ * telemetry is attached. Owns the guards so both platforms share them: the flag check, a bounded
+ * queue for records made before the telemetry exists, and a per-process cap so a retry loop cannot
+ * flood the endpoint. [isEnabled] is a function rather than a feature manager so this package does not
+ * depend on the features package at runtime.
  */
 internal class LogEventRecorder(
     private val scope: CoroutineScope,
@@ -34,7 +26,7 @@ internal class LogEventRecorder(
     private var admitted = 0
 
     private sealed interface Admission {
-        class Emit(val sink: ILogTelemetry) : Admission
+        class Emit(val telemetry: ILogTelemetry) : Admission
 
         object Queued : Admission
 
@@ -51,9 +43,9 @@ internal class LogEventRecorder(
             }
             val record = toRecord(event, attributes)
             when (val admission = admit(record)) {
-                is Admission.Emit -> emit(admission.sink, listOf(record))
-                Admission.Queued -> logger.debug("LogEventRecorder: queued ${event.eventName} until a sink is attached")
-                Admission.QueueFull -> logger.debug("LogEventRecorder: dropped ${event.eventName}, pre-sink queue is full")
+                is Admission.Emit -> emit(admission.telemetry, listOf(record))
+                Admission.Queued -> logger.debug("LogEventRecorder: queued ${event.eventName} until remote telemetry is attached")
+                Admission.QueueFull -> logger.debug("LogEventRecorder: dropped ${event.eventName}, pre-attach queue is full")
                 Admission.CapReached ->
                     logger.debug("LogEventRecorder: dropped ${event.eventName}, session cap of $sessionCap reached")
             }
@@ -72,11 +64,11 @@ internal class LogEventRecorder(
                     copy
                 }
             if (pending.isNotEmpty()) {
-                logger.debug("LogEventRecorder: sink attached, flushing ${pending.size} queued event(s)")
+                logger.debug("LogEventRecorder: remote telemetry attached, flushing ${pending.size} queued event(s)")
                 emit(telemetry, pending)
             }
         } catch (t: Throwable) {
-            logger.debug("LogEventRecorder: failed to attach the sink: ${t.message}")
+            logger.debug("LogEventRecorder: failed to attach remote telemetry: ${t.message}")
         }
     }
 
@@ -84,15 +76,15 @@ internal class LogEventRecorder(
         lock.withLock { telemetry = null }
     }
 
-    /** Applies the cap and the queue under [lock]; only an [Admission.Emit] needs work outside it. */
+    /** Kept separate so the lock covers the decision only, not the emit. */
     private fun admit(record: LogRecord): Admission =
         lock.withLock {
-            val sink = telemetry
+            val current = telemetry
             when {
                 admitted >= sessionCap -> Admission.CapReached
-                sink != null -> {
+                current != null -> {
                     admitted++
-                    Admission.Emit(sink)
+                    Admission.Emit(current)
                 }
                 queued.size < maxQueued -> {
                     admitted++
@@ -109,17 +101,16 @@ internal class LogEventRecorder(
             body = event.eventName,
             // The event name goes last so a caller attribute cannot shadow it.
             attributes = attributes + (EVENT_NAME_ATTRIBUTE to event.eventName),
-            // Stamped at record time, so a queued event keeps the time it happened rather than
-            // the time the sink came up.
+            // Stamped now so a queued event keeps the time it happened, not the flush time.
             timestampNanos = epochNanosNow(),
         )
 
-    /** One coroutine per call, so the records of a flush leave in the order they were recorded. */
-    private fun emit(sink: ILogTelemetry, records: List<LogRecord>) {
+    /** One coroutine per call so a flush keeps its recording order. */
+    private fun emit(telemetry: ILogTelemetry, records: List<LogRecord>) {
         scope.launch {
             for (record in records) {
                 try {
-                    sink.emit(record)
+                    telemetry.emit(record)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -130,7 +121,7 @@ internal class LogEventRecorder(
     }
 
     companion object {
-        /** OTel log-event convention. A record carrying this attribute is an event. */
+        /** OTel log-event convention: a record carrying this attribute is an event. */
         const val EVENT_NAME_ATTRIBUTE = "event.name"
         const val DEFAULT_MAX_QUEUED = 20
         const val DEFAULT_SESSION_CAP = 20
