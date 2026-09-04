@@ -45,7 +45,7 @@ enum class FeatureFlag(
      * off stops them the same way, without a cold start in either direction.
      */
     SDK_EVENT_DEVICE_GESTURE(
-        "sdk_event_device_gesture_enabled",
+        "sdk_event_device_gesture",
         FeatureActivationMode.IMMEDIATE,
     ),
     ;

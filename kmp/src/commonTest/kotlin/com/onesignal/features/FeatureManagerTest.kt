@@ -34,7 +34,7 @@ class FeatureFlagTest {
 
     @Test
     fun deviceGestureEventIsImmediate() {
-        assertEquals("sdk_event_device_gesture_enabled", FeatureFlag.SDK_EVENT_DEVICE_GESTURE.key)
+        assertEquals("sdk_event_device_gesture", FeatureFlag.SDK_EVENT_DEVICE_GESTURE.key)
         assertEquals(
             FeatureActivationMode.IMMEDIATE,
             FeatureFlag.SDK_EVENT_DEVICE_GESTURE.activationMode,

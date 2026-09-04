@@ -24,7 +24,7 @@ class ObservabilityEventTest {
     @Test
     fun eachEventOwnsAnImmediateFlagNamedAfterIt() {
         for (event in ObservabilityEvent.entries) {
-            val expectedKey = "sdk_event_" + event.eventName.removePrefix("sdk.") + "_enabled"
+            val expectedKey = "sdk_event_" + event.eventName.removePrefix("sdk.")
             assertEquals(expectedKey, event.flag.key, event.name)
             assertEquals(FeatureActivationMode.IMMEDIATE, event.flag.activationMode, event.name)
         }
