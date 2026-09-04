@@ -40,6 +40,15 @@ class FeatureFlagTest {
             FeatureFlag.SDK_EVENT_DEVICE_GESTURE.activationMode,
         )
     }
+
+    @Test
+    fun deviceGestureKillSwitchIsImmediate() {
+        assertEquals("sdk_device_gesture_disabled", FeatureFlag.SDK_DEVICE_GESTURE_DISABLED.key)
+        assertEquals(
+            FeatureActivationMode.IMMEDIATE,
+            FeatureFlag.SDK_DEVICE_GESTURE_DISABLED.activationMode,
+        )
+    }
 }
 
 class FeatureManagerTest {
