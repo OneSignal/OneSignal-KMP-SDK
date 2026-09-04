@@ -7,9 +7,6 @@ import com.onesignal.logger.crash.LogCrashReporter
 import com.onesignal.logger.crash.LogCrashUploader
 import com.onesignal.logger.internal.LogTelemetryCrashImpl
 import com.onesignal.logger.internal.LogTelemetryRemoteImpl
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.SupervisorJob
 
 /**
  * Composition root for the logger module. Mirrors `OtelFactory`.
@@ -74,9 +71,5 @@ object LoggerFactory {
         flags: IFeatureFlagReader,
         logger: ILogger,
     ): IObservabilityEventRecorder =
-        ObservabilityEventRecorder(
-            scope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
-            flags = flags,
-            logger = logger,
-        )
+        ObservabilityEventRecorder(flags = flags, logger = logger)
 }

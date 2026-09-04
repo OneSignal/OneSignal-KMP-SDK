@@ -31,7 +31,7 @@ class ObservabilityEventRecorderTest {
         logger: ILogger = RecordingLogger(),
         maxQueued: Int = ObservabilityEventRecorder.DEFAULT_MAX_QUEUED,
         processCap: Int = ObservabilityEventRecorder.DEFAULT_PROCESS_CAP,
-    ) = ObservabilityEventRecorder(scope, flags, logger, maxQueued, processCap)
+    ) = ObservabilityEventRecorder(flags, logger, maxQueued, processCap, scope)
 
     private fun List<LogRecord>.sequence(): List<String?> = map { it.attributes["n"] }
 

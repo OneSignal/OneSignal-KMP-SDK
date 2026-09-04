@@ -4,6 +4,8 @@ import com.onesignal.features.IFeatureFlagReader
 import com.onesignal.features.PlatformLock
 import com.onesignal.logger.internal.epochNanosNow
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -18,11 +20,11 @@ import kotlin.coroutines.cancellation.CancellationException
  * which itself throws cannot break the never-throws contract of [record].
  */
 internal class ObservabilityEventRecorder(
-    private val scope: CoroutineScope,
     private val flags: IFeatureFlagReader,
     private val logger: ILogger,
     private val maxQueued: Int = DEFAULT_MAX_QUEUED,
     private val processCap: Int = DEFAULT_PROCESS_CAP,
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default),
 ) : IObservabilityEventRecorder {
     private val lock = PlatformLock()
     private var telemetry: ILogTelemetry? = null
