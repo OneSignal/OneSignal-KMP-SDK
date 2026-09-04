@@ -367,9 +367,7 @@ android {
     compileSdkVersion rootProject.buildVersions.compileSdkVersion
 
     defaultConfig {
-        // Logger pipeline floor is API 23. Hosts at min 21 override the merge
-        // and skip creating the pipeline below that at runtime.
-        minSdkVersion 23
+        minSdkVersion rootProject.buildVersions.minSdkVersion
     }
 
     // Must mirror the build types declared by consuming modules (e.g. :core) so
