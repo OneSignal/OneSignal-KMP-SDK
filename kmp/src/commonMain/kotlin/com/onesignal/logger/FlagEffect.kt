@@ -5,10 +5,10 @@ import com.onesignal.features.IFeatureFlagReader
 
 /**
  * What an [ObservabilityEvent]'s catalog flag means for it. The evaluation lives here rather than
- * on the event so both polarities stay testable before any event uses them; enum entries cannot be
+ * on the event so both effects stay testable before any event uses them; enum entries cannot be
  * built in a test.
  */
-internal enum class FlagPolarity {
+internal enum class FlagEffect {
     /** Off until the flag is present. The usual shape, a measurement switched on per app. */
     ENABLES,
 

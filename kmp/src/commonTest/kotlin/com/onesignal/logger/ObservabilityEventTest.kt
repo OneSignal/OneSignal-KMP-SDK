@@ -29,9 +29,9 @@ class ObservabilityEventTest {
             val flag = event.flag ?: continue
             val name = event.eventName.removePrefix("sdk.")
             val expectedKey =
-                when (event.flagPolarity) {
-                    FlagPolarity.ENABLES -> "sdk_event_$name"
-                    FlagPolarity.DISABLES -> "sdk_event_${name}_disabled"
+                when (event.flagEffect) {
+                    FlagEffect.ENABLES -> "sdk_event_$name"
+                    FlagEffect.DISABLES -> "sdk_event_${name}_disabled"
                 }
             assertEquals(expectedKey, flag.key, event.name)
             assertEquals(FeatureActivationMode.IMMEDIATE, flag.activationMode, event.name)
@@ -44,6 +44,6 @@ class ObservabilityEventTest {
     fun deviceGestureIsOffUntilItsCatalogFlagIsOn() {
         assertEquals("sdk.device_gesture", ObservabilityEvent.DEVICE_GESTURE.eventName)
         assertEquals(FeatureFlag.SDK_EVENT_DEVICE_GESTURE, ObservabilityEvent.DEVICE_GESTURE.flag)
-        assertEquals(FlagPolarity.ENABLES, ObservabilityEvent.DEVICE_GESTURE.flagPolarity)
+        assertEquals(FlagEffect.ENABLES, ObservabilityEvent.DEVICE_GESTURE.flagEffect)
     }
 }

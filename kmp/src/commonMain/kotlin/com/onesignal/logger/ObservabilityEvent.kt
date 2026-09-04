@@ -17,7 +17,7 @@ enum class ObservabilityEvent(
     /** The catalog flag that gates the event, or null when only the pipeline gate applies. */
     internal val flag: FeatureFlag? = null,
     /** Whether [flag] turns the event on (the default) or off (a kill switch). */
-    internal val flagPolarity: FlagPolarity = FlagPolarity.ENABLES,
+    internal val flagEffect: FlagEffect = FlagEffect.ENABLES,
 ) {
     /**
      * Fired when the detector recognises the gesture, not deduped, with `gesture.result`,
@@ -26,7 +26,7 @@ enum class ObservabilityEvent(
     DEVICE_GESTURE("sdk.device_gesture", FeatureFlag.SDK_EVENT_DEVICE_GESTURE),
     ;
 
-    internal fun allows(flags: IFeatureFlagReader): Boolean = flagPolarity.allows(flag, flags)
+    internal fun allows(flags: IFeatureFlagReader): Boolean = flagEffect.allows(flag, flags)
 
-    internal fun blockedBy(): String = flagPolarity.blockedBy(flag)
+    internal fun blockedBy(): String = flagEffect.blockedBy(flag)
 }
