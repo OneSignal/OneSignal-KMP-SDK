@@ -367,9 +367,9 @@ android {
     compileSdkVersion rootProject.buildVersions.compileSdkVersion
 
     defaultConfig {
-        // Matches the `otel` module. Runtime callers gate usage on SDK level the
-        // same way `otel` does, so consuming modules (min 21) override the merge.
-        minSdkVersion 26
+        // Logger pipeline floor is API 23. Hosts at min 21 override the merge
+        // and skip creating the pipeline below that at runtime.
+        minSdkVersion 23
     }
 
     // Must mirror the build types declared by consuming modules (e.g. :core) so
