@@ -436,7 +436,7 @@ class ObservabilityEventRecorderTest {
 
         recorder.record(
             event,
-            mapOf("gesture.result" to "copied", "gesture.id_kind" to "subscription_id", "gesture.id" to "push-789"),
+            mapOf("gesture.result" to "copied", "gesture.push_subscription_id" to "push-789"),
         )
         runCurrent()
         remote.forceFlush()
@@ -449,8 +449,7 @@ class ObservabilityEventRecorderTest {
             record.all(6).map { parseProto(it.bytes()) }.associate { it.string(1) to it.message(2).string(1) }
         assertEquals("sdk.device_gesture", attributes["event.name"])
         assertEquals("copied", attributes["gesture.result"])
-        assertEquals("subscription_id", attributes["gesture.id_kind"])
-        assertEquals("push-789", attributes["gesture.id"])
+        assertEquals("push-789", attributes["gesture.push_subscription_id"])
         // The per-event fields every record on this telemetry carries.
         assertEquals("app-123", attributes["ossdk.app_id"])
         assertEquals("foreground", attributes["app.state"])

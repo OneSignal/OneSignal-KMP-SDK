@@ -20,8 +20,9 @@ enum class ObservabilityEvent(
     internal val flagEffect: FlagEffect = FlagEffect.ENABLES,
 ) {
     /**
-     * Fired when the detector recognises the gesture, not deduped, with `gesture.result`,
-     * `gesture.id_kind` and `gesture.id`. Temporary: comes out once its usage question is answered.
+     * Fired when the detector recognises the gesture, not deduped, with `gesture.result` and, when
+     * something was copied, `gesture.push_subscription_id`. Temporary: comes out once its usage
+     * question is answered.
      */
     DEVICE_GESTURE("sdk.device_gesture", FeatureFlag.SDK_EVENT_DEVICE_GESTURE),
     ;
