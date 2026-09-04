@@ -169,12 +169,16 @@ class FeatureManagerTest {
     }
 
     @Test
-    fun eventFlagTurnsOffOnTheNextRefresh() {
-        // Turning an event off must not wait for a cold start; that is why event flags are IMMEDIATE.
+    fun eventFlagTurnsOnAndOffWithoutAColdStart() {
+        // Turning an event on is the rollout and turning it off is the kill switch; neither may wait
+        // for a cold start, which is why event flags are IMMEDIATE.
         val manager = FeatureManager()
+        manager.refresh(emptyList(), applyAppStartupFlags = true)
+        assertFalse(manager.isEnabled(FeatureFlag.SDK_EVENT_DEVICE_GESTURE))
+
         manager.refresh(
             listOf(FeatureFlag.SDK_EVENT_DEVICE_GESTURE.key),
-            applyAppStartupFlags = true,
+            applyAppStartupFlags = false,
         )
         assertTrue(manager.isEnabled(FeatureFlag.SDK_EVENT_DEVICE_GESTURE))
 

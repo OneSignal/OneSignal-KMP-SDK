@@ -41,7 +41,8 @@ enum class FeatureFlag(
 
     /**
      * Ships the `sdk.device_gesture` event ([com.onesignal.logger.ObservabilityEvent.DEVICE_GESTURE]).
-     * IMMEDIATE so turning the event off does not need a cold start.
+     * IMMEDIATE so turning the event on reaches installs on their next flags fetch, and turning it
+     * off stops them the same way, without a cold start in either direction.
      */
     SDK_EVENT_DEVICE_GESTURE(
         "sdk_event_device_gesture_enabled",
