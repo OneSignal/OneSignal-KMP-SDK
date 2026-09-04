@@ -4,7 +4,6 @@ import com.onesignal.features.FeatureActivationMode
 import com.onesignal.features.FeatureFlag
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /** The naming rules for events and their flags, enforced so a new entry cannot drift from them. */
@@ -23,26 +22,28 @@ class ObservabilityEventTest {
     }
 
     @Test
-    fun eachGatedEventOwnsAnImmediateFlagNamedAfterIt() {
+    fun eachFlaggedEventOwnsAnImmediateFlagNamedAfterIt() {
         // A flag that turns an event on is sdk_event_<name>; a kill switch is sdk_event_<name>_disabled.
         // IMMEDIATE either way, so a rollout or a stop does not wait for a cold start.
         for (event in ObservabilityEvent.entries) {
+            val flag = event.flag ?: continue
             val name = event.eventName.removePrefix("sdk.")
-            when (val gate = event.gate) {
-                is ObservabilityEventGate.RequiresFlag -> assertEquals("sdk_event_$name", gate.flag.key, event.name)
-                is ObservabilityEventGate.UnlessFlag -> assertEquals("sdk_event_${name}_disabled", gate.flag.key, event.name)
-                ObservabilityEventGate.Always -> Unit
-            }
-            event.gate.flag?.let { assertEquals(FeatureActivationMode.IMMEDIATE, it.activationMode, event.name) }
+            val expectedKey =
+                when (event.flagPolarity) {
+                    FlagPolarity.ENABLES -> "sdk_event_$name"
+                    FlagPolarity.DISABLES -> "sdk_event_${name}_disabled"
+                }
+            assertEquals(expectedKey, flag.key, event.name)
+            assertEquals(FeatureActivationMode.IMMEDIATE, flag.activationMode, event.name)
         }
-        val flags = ObservabilityEvent.entries.mapNotNull { it.gate.flag }
+        val flags = ObservabilityEvent.entries.mapNotNull { it.flag }
         assertEquals(flags.size, flags.toSet().size)
     }
 
     @Test
-    fun deviceGestureRequiresItsCatalogFlag() {
+    fun deviceGestureIsOffUntilItsCatalogFlagIsOn() {
         assertEquals("sdk.device_gesture", ObservabilityEvent.DEVICE_GESTURE.eventName)
-        val gate = assertIs<ObservabilityEventGate.RequiresFlag>(ObservabilityEvent.DEVICE_GESTURE.gate)
-        assertEquals(FeatureFlag.SDK_EVENT_DEVICE_GESTURE, gate.flag)
+        assertEquals(FeatureFlag.SDK_EVENT_DEVICE_GESTURE, ObservabilityEvent.DEVICE_GESTURE.flag)
+        assertEquals(FlagPolarity.ENABLES, ObservabilityEvent.DEVICE_GESTURE.flagPolarity)
     }
 }

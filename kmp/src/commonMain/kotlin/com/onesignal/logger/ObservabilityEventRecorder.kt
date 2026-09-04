@@ -13,8 +13,8 @@ import kotlin.coroutines.cancellation.CancellationException
  * Ships [ObservabilityEvent]s as INFO records carrying `event.name` through whichever remote
  * telemetry is attached. Owns the guards so both platforms share them: the flag check, a bounded
  * queue for records made before the telemetry exists, and a per-process cap so a retry loop cannot
- * flood the endpoint. Each event's [ObservabilityEventGate] decides what to ask, and the host only
- * answers flag lookups through [flags], so no feature manager is needed here.
+ * flood the endpoint. Each event names the flag that gates it, and the host only answers flag
+ * lookups through [flags], so no feature manager is needed here.
  *
  * Faults log at WARN and expected drops at DEBUG, through [logger] guarded so that a host logger
  * which itself throws cannot break the never-throws contract of [record].
@@ -31,31 +31,36 @@ internal class ObservabilityEventRecorder(
     private val queued = ArrayList<LogRecord>()
     private var admitted = 0
 
-    private sealed interface Admission {
-        class Emit(val telemetry: ILogTelemetry) : Admission
-
-        object Queued : Admission
-
-        object QueueFull : Admission
-
-        object CapReached : Admission
-    }
-
     override fun record(event: ObservabilityEvent) = record(event, emptyMap())
 
     override fun record(event: ObservabilityEvent, attributes: Map<String, String>) {
         try {
-            if (!event.gate.allows(flags)) {
-                debug("dropped ${event.eventName}, ${event.gate.blockedBy()}")
+            if (!event.allows(flags)) {
+                debug("dropped ${event.eventName}, ${event.blockedBy()}")
                 return
             }
             val record = toRecord(event, attributes)
-            when (val admission = admit(record)) {
-                is Admission.Emit -> emit(admission.telemetry, listOf(record))
-                Admission.Queued -> debug("queued ${event.eventName} until remote telemetry is attached")
-                Admission.QueueFull -> debug("dropped ${event.eventName}, pre-attach queue is full")
-                Admission.CapReached -> debug("dropped ${event.eventName}, per-process cap of $processCap reached")
-            }
+            // Decided and, when attached, launched under the lock: launch only schedules, so the
+            // lock is never held while anything runs. Only the debug line waits for it.
+            val note =
+                lock.withLock {
+                    val current = telemetry
+                    when {
+                        admitted >= processCap -> "dropped ${event.eventName}, per-process cap of $processCap reached"
+                        current != null -> {
+                            admitted++
+                            emit(current, listOf(record))
+                            null
+                        }
+                        queued.size < maxQueued -> {
+                            admitted++
+                            queued.add(record)
+                            "queued ${event.eventName} until remote telemetry is attached"
+                        }
+                        else -> "dropped ${event.eventName}, pre-attach queue is full"
+                    }
+                }
+            note?.let(::debug)
         } catch (t: Throwable) {
             warn("failed to record ${event.eventName}: ${t.message}")
         }
@@ -103,25 +108,6 @@ internal class ObservabilityEventRecorder(
             }
         debug("reset, dropped $dropped queued event(s)")
     }
-
-    /** Kept separate so the lock covers the decision only, not the emit. */
-    private fun admit(record: LogRecord): Admission =
-        lock.withLock {
-            val current = telemetry
-            when {
-                admitted >= processCap -> Admission.CapReached
-                current != null -> {
-                    admitted++
-                    Admission.Emit(current)
-                }
-                queued.size < maxQueued -> {
-                    admitted++
-                    queued.add(record)
-                    Admission.Queued
-                }
-                else -> Admission.QueueFull
-            }
-        }
 
     private fun toRecord(event: ObservabilityEvent, attributes: Map<String, String>): LogRecord =
         LogRecord(
