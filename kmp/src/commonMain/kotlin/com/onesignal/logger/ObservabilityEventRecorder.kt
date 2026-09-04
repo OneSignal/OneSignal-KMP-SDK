@@ -1,5 +1,6 @@
 package com.onesignal.logger
 
+import com.onesignal.features.IFeatureFlagReader
 import com.onesignal.features.PlatformLock
 import com.onesignal.logger.internal.epochNanosNow
 import kotlinx.coroutines.CoroutineScope
@@ -10,15 +11,15 @@ import kotlin.coroutines.cancellation.CancellationException
  * Ships [ObservabilityEvent]s as INFO records carrying `event.name` through whichever remote
  * telemetry is attached. Owns the guards so both platforms share them: the flag check, a bounded
  * queue for records made before the telemetry exists, and a per-process cap so a retry loop cannot
- * flood the endpoint. The host owns the flag read through [gate], so no feature manager is needed
- * here.
+ * flood the endpoint. Each event's [ObservabilityEventGate] decides what to ask, and the host only
+ * answers flag lookups through [flags], so no feature manager is needed here.
  *
  * Faults log at WARN and expected drops at DEBUG, through [logger] guarded so that a host logger
  * which itself throws cannot break the never-throws contract of [record].
  */
 internal class ObservabilityEventRecorder(
     private val scope: CoroutineScope,
-    private val gate: IObservabilityEventGate,
+    private val flags: IFeatureFlagReader,
     private val logger: ILogger,
     private val maxQueued: Int = DEFAULT_MAX_QUEUED,
     private val processCap: Int = DEFAULT_PROCESS_CAP,
@@ -42,8 +43,8 @@ internal class ObservabilityEventRecorder(
 
     override fun record(event: ObservabilityEvent, attributes: Map<String, String>) {
         try {
-            if (!gate.isEnabled(event)) {
-                debug("dropped ${event.eventName}, ${event.flag.key} is off")
+            if (!event.gate.allows(flags)) {
+                debug("dropped ${event.eventName}, ${event.gate.blockedBy()}")
                 return
             }
             val record = toRecord(event, attributes)

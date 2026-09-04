@@ -8,7 +8,7 @@ package com.onesignal.logger
 interface IObservabilityEventRecorder {
     /**
      * Never throws or blocks, so it is safe from lifecycle callbacks on the main thread. Drops
-     * when the event's flag is off or the per-process cap is reached; queues, bounded, until
+     * when the event's gate says no or the per-process cap is reached; queues, bounded, until
      * remote telemetry is attached.
      */
     fun record(event: ObservabilityEvent, attributes: Map<String, String>)

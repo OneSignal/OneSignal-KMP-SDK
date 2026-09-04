@@ -1,5 +1,7 @@
 package com.onesignal.logger
 
+import com.onesignal.features.FeatureFlag
+import com.onesignal.features.IFeatureFlagReader
 import com.onesignal.logger.attributes.LogFieldsPerEvent
 import com.onesignal.logger.attributes.LogFieldsTopLevel
 import com.onesignal.logger.internal.LogTelemetryRemoteImpl
@@ -25,11 +27,11 @@ class ObservabilityEventRecorderTest {
 
     private fun recorder(
         scope: CoroutineScope,
-        gate: IObservabilityEventGate = IObservabilityEventGate { true },
+        flags: IFeatureFlagReader = IFeatureFlagReader { true },
         logger: ILogger = RecordingLogger(),
         maxQueued: Int = ObservabilityEventRecorder.DEFAULT_MAX_QUEUED,
         processCap: Int = ObservabilityEventRecorder.DEFAULT_PROCESS_CAP,
-    ) = ObservabilityEventRecorder(scope, gate, logger, maxQueued, processCap)
+    ) = ObservabilityEventRecorder(scope, flags, logger, maxQueued, processCap)
 
     private fun List<LogRecord>.sequence(): List<String?> = map { it.attributes["n"] }
 
@@ -86,7 +88,7 @@ class ObservabilityEventRecorderTest {
     @Test
     fun recordDropsWhenTheEventFlagIsOff() = runTest {
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { false })
+        val recorder = recorder(backgroundScope, flags = IFeatureFlagReader { false })
 
         recorder.record(event)
         recorder.attach(telemetry)
@@ -101,7 +103,7 @@ class ObservabilityEventRecorderTest {
         // IMMEDIATE flags flip mid-session; the recorder must not latch the first answer.
         var enabled = false
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { enabled })
+        val recorder = recorder(backgroundScope, flags = IFeatureFlagReader { enabled })
         recorder.attach(telemetry)
 
         recorder.record(event, mapOf("n" to "off"))
@@ -113,14 +115,14 @@ class ObservabilityEventRecorderTest {
     }
 
     @Test
-    fun theGateSeesTheEventItIsAskedAbout() = runTest {
-        val asked = mutableListOf<ObservabilityEvent>()
-        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { asked.add(it) })
+    fun theHostIsAskedOnlyForTheEventsOwnFlag() = runTest {
+        val asked = mutableListOf<FeatureFlag>()
+        val recorder = recorder(backgroundScope, flags = IFeatureFlagReader { asked.add(it) })
         recorder.attach(RecordingTelemetry())
 
         recorder.record(event)
 
-        assertEquals(listOf(event), asked)
+        assertEquals(listOf(FeatureFlag.SDK_EVENT_DEVICE_GESTURE), asked)
     }
 
     // ===== The pre-attach queue =====
@@ -216,7 +218,7 @@ class ObservabilityEventRecorderTest {
     fun flagOffEventsDoNotConsumeTheCap() = runTest {
         var enabled = false
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { enabled }, processCap = 1)
+        val recorder = recorder(backgroundScope, flags = IFeatureFlagReader { enabled }, processCap = 1)
         recorder.attach(telemetry)
 
         recorder.record(event, mapOf("n" to "off"))
@@ -338,7 +340,7 @@ class ObservabilityEventRecorderTest {
         val logger = RecordingLogger()
         val telemetry = RecordingTelemetry()
         val recorder =
-            recorder(backgroundScope, gate = IObservabilityEventGate { throw IllegalStateException("flags boom") }, logger = logger)
+            recorder(backgroundScope, flags = IFeatureFlagReader { throw IllegalStateException("flags boom") }, logger = logger)
         recorder.attach(telemetry)
 
         recorder.record(event)
@@ -366,7 +368,7 @@ class ObservabilityEventRecorderTest {
     @Test
     fun expectedDropsLogAtDebugNotWarn() = runTest {
         val logger = RecordingLogger()
-        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { false }, logger = logger)
+        val recorder = recorder(backgroundScope, flags = IFeatureFlagReader { false }, logger = logger)
 
         recorder.record(event)
 
@@ -377,7 +379,7 @@ class ObservabilityEventRecorderTest {
     @Test
     fun aThrowingHostLoggerCannotEscapeRecordOrAttach() = runTest {
         val telemetry = RecordingTelemetry()
-        val recorder = recorder(backgroundScope, gate = IObservabilityEventGate { false }, logger = ThrowingLogger())
+        val recorder = recorder(backgroundScope, flags = IFeatureFlagReader { false }, logger = ThrowingLogger())
 
         recorder.record(event)
         recorder.attach(telemetry)
