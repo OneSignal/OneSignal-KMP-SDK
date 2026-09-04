@@ -1,5 +1,6 @@
 package com.onesignal.logger
 
+import com.onesignal.features.IFeatureFlagReader
 import com.onesignal.logger.attributes.LogFieldsPerEvent
 import com.onesignal.logger.attributes.LogFieldsTopLevel
 import com.onesignal.logger.crash.LogCrashReporter
@@ -60,4 +61,15 @@ object LoggerFactory {
         fileStore: ILogFileStore,
         logger: ILogger,
     ): LogCrashUploader = LogCrashUploader(platformProvider, remote, fileStore, logger)
+
+    /**
+     * Creates the recorder [ObservabilityEvent]s ship through. [flags] is the host's feature-manager
+     * lookup; the host attaches each remote telemetry it installs through
+     * [IObservabilityEventRecorder.attach].
+     */
+    fun createObservabilityEventRecorder(
+        flags: IFeatureFlagReader,
+        logger: ILogger,
+    ): IObservabilityEventRecorder =
+        ObservabilityEventRecorder(flags = flags, logger = logger)
 }

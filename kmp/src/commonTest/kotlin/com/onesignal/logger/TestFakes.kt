@@ -128,6 +128,49 @@ internal class FakeFileStore : ILogFileStore {
     }
 }
 
+internal class RecordingTelemetry : ILogTelemetry {
+    val emitted = mutableListOf<LogRecord>()
+
+    /** When set, every [emit] throws it instead of recording. */
+    var emitException: Exception? = null
+
+    override suspend fun emit(record: LogRecord) {
+        emitException?.let { throw it }
+        emitted.add(record)
+    }
+
+    override suspend fun forceFlush() = Unit
+
+    override fun shutdown() = Unit
+}
+
+/** Counts emits under a mutex, for tests that record from several threads at once. */
+internal class CountingTelemetry : ILogTelemetry {
+    private val mutex = Mutex()
+    private var emitted = 0
+
+    override suspend fun emit(record: LogRecord) {
+        mutex.withLock { emitted++ }
+    }
+
+    suspend fun count(): Int = mutex.withLock { emitted }
+
+    override suspend fun forceFlush() = Unit
+
+    override fun shutdown() = Unit
+}
+
+/** Every call throws, to prove callers keep their own never-throws contracts. */
+internal class ThrowingLogger : ILogger {
+    override fun error(message: String) = throw IllegalStateException("logger boom")
+
+    override fun warn(message: String) = throw IllegalStateException("logger boom")
+
+    override fun info(message: String) = throw IllegalStateException("logger boom")
+
+    override fun debug(message: String) = throw IllegalStateException("logger boom")
+}
+
 internal class RecordingLogger : ILogger {
     val messages = mutableListOf<String>()
 
