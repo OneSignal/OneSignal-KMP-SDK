@@ -104,9 +104,10 @@ internal class ObservabilityEventRecorder(
             lock.withLock {
                 val count = queued.size
                 queued.clear()
+                admitted = 0
                 count
             }
-        debug("reset, dropped $dropped queued event(s)")
+        debug("reset, dropped $dropped queued event(s) and restarted the per-process count")
     }
 
     private fun toRecord(event: ObservabilityEvent, attributes: Map<String, String>): LogRecord =

@@ -319,8 +319,9 @@ class ObservabilityEventRecorderTest {
     }
 
     @Test
-    fun resetDoesNotRefundTheCap() = runTest {
-        // The cap guards the process, not the app id; a reset must not hand out a second budget.
+    fun resetStartsOverAsANewProcessWould() = runTest {
+        // clearStatics on iOS resets the shared recorder between unit tests, and an app-id change
+        // resets it too; neither may inherit a spent budget from events that never shipped.
         val telemetry = RecordingTelemetry()
         val recorder = recorder(backgroundScope, processCap = 1)
         recorder.record(event, mapOf("n" to "1"))
@@ -330,7 +331,7 @@ class ObservabilityEventRecorderTest {
         recorder.record(event, mapOf("n" to "2"))
         runCurrent()
 
-        assertTrue(telemetry.emitted.isEmpty())
+        assertEquals(listOf("2"), telemetry.emitted.sequence())
     }
 
     // ===== Fail-open =====

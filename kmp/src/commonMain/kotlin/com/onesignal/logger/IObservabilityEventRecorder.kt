@@ -26,6 +26,9 @@ interface IObservabilityEventRecorder {
      */
     fun detach(telemetry: ILogTelemetry)
 
-    /** Drops every queued record, for an app-id change. The attached telemetry and the cap stay. */
+    /**
+     * Starts over as a new process would: drops every queued record and restarts the per-process
+     * count. For an app-id change and for test isolation. The attached telemetry stays.
+     */
     fun reset()
 }
