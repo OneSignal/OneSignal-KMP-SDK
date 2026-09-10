@@ -31,6 +31,24 @@ class FeatureFlagTest {
             FeatureFlag.SDK_CUSTOM_LOGGING.activationMode,
         )
     }
+
+    @Test
+    fun deviceGestureEventIsImmediate() {
+        assertEquals("sdk_event_device_gesture", FeatureFlag.SDK_EVENT_DEVICE_GESTURE.key)
+        assertEquals(
+            FeatureActivationMode.IMMEDIATE,
+            FeatureFlag.SDK_EVENT_DEVICE_GESTURE.activationMode,
+        )
+    }
+
+    @Test
+    fun deviceGestureKillSwitchIsImmediate() {
+        assertEquals("sdk_device_gesture_disabled", FeatureFlag.SDK_DEVICE_GESTURE_DISABLED.key)
+        assertEquals(
+            FeatureActivationMode.IMMEDIATE,
+            FeatureFlag.SDK_DEVICE_GESTURE_DISABLED.activationMode,
+        )
+    }
 }
 
 class FeatureManagerTest {
@@ -157,6 +175,24 @@ class FeatureManagerTest {
             applyAppStartupFlags = false,
         )
         assertTrue(manager.isEnabled(FeatureFlag.SDK_CUSTOM_LOGGING))
+    }
+
+    @Test
+    fun eventFlagTurnsOnAndOffWithoutAColdStart() {
+        // Turning an event on is the rollout and turning it off is the kill switch; neither may wait
+        // for a cold start, which is why event flags are IMMEDIATE.
+        val manager = FeatureManager()
+        manager.refresh(emptyList(), applyAppStartupFlags = true)
+        assertFalse(manager.isEnabled(FeatureFlag.SDK_EVENT_DEVICE_GESTURE))
+
+        manager.refresh(
+            listOf(FeatureFlag.SDK_EVENT_DEVICE_GESTURE.key),
+            applyAppStartupFlags = false,
+        )
+        assertTrue(manager.isEnabled(FeatureFlag.SDK_EVENT_DEVICE_GESTURE))
+
+        manager.refresh(emptyList(), applyAppStartupFlags = false)
+        assertFalse(manager.isEnabled(FeatureFlag.SDK_EVENT_DEVICE_GESTURE))
     }
 
     @Test

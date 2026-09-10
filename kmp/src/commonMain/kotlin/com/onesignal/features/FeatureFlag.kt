@@ -38,6 +38,27 @@ enum class FeatureFlag(
         "sdk_custom_logging",
         FeatureActivationMode.APP_STARTUP,
     ),
+
+    /**
+     * Ships the `sdk.device_gesture` event ([com.onesignal.logger.ObservabilityEvent.DEVICE_GESTURE]).
+     * IMMEDIATE so turning the event on reaches installs on their next flags fetch, and turning it
+     * off stops them the same way, without a cold start in either direction.
+     */
+    SDK_EVENT_DEVICE_GESTURE(
+        "sdk_event_device_gesture",
+        FeatureActivationMode.IMMEDIATE,
+    ),
+
+    /**
+     * Kill switch for the device gesture that copies the push subscription ID to the clipboard:
+     * present means off, so the gesture works before the first flags fetch and a customer can
+     * be opted out per app. IMMEDIATE so opting out lands on the next fetch, not the next cold
+     * start.
+     */
+    SDK_DEVICE_GESTURE_DISABLED(
+        "sdk_device_gesture_disabled",
+        FeatureActivationMode.IMMEDIATE,
+    ),
     ;
 
     fun isEnabledIn(enabledKeys: Set<String>): Boolean = enabledKeys.contains(key)
