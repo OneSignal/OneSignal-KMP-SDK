@@ -5,7 +5,7 @@ import PackageDescription
 let package = Package(
     name: "OneSignalKMP",
     platforms: [
-        .iOS(.v11),
+        .iOS(.v15),
         .macCatalyst(.v14),
     ],
     products: [

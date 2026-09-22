@@ -29,10 +29,8 @@ an `ios-arm64` device slice, an `ios-arm64_x86_64-simulator` slice, and an
 `ios-arm64_x86_64-maccatalyst` slice.
 
 Kotlin 2.3 defaults Apple binaries to iOS 14. The iOS device and simulator binaries
-retain the existing iOS 11 contract through Kotlin/Native minimum-version overrides,
-and the verification task checks the resulting Mach-O values on every build. The
-arm64 simulator slice remains at iOS 14 because that simulator architecture was
-introduced with iOS 14; the device and x86_64 simulator slices retain iOS 11.
+are raised to the iOS 15 contract through Kotlin/Native minimum-version overrides,
+and the verification task checks the resulting Mach-O values on every build.
 Catalyst uses the supported iOS 14 minimum. The macabi bridge is experimental
 Kotlin/Native functionality; its x86_64 binary depends on the tier-3 `iosX64` target
 and must be revisited before adopting a Kotlin version that removes that target.
@@ -76,7 +74,7 @@ package:
 
 The package product and Swift module are both named `OneSignalKMP`. `Package.swift`
 points to the generated framework under `kmp/build/XCFrameworks/release` and declares
-iOS 11 plus Mac Catalyst 14 support.
+iOS 15 plus Mac Catalyst 14 support.
 
 ### CocoaPods
 
