@@ -59,6 +59,16 @@ enum class FeatureFlag(
         "sdk_device_gesture_disabled",
         FeatureActivationMode.IMMEDIATE,
     ),
+
+    /**
+     * Routes session reporting through the sessions API instead of the legacy session paths.
+     * IMMEDIATE because hosts capture the value once at session start, so a session never mixes
+     * paths and a kill switch reaches the next session without a cold start.
+     */
+    SDK_SESSIONS_V2(
+        "sdk_sessions_v2",
+        FeatureActivationMode.IMMEDIATE,
+    ),
     ;
 
     fun isEnabledIn(enabledKeys: Set<String>): Boolean = enabledKeys.contains(key)

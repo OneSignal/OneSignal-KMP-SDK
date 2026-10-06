@@ -49,6 +49,15 @@ class FeatureFlagTest {
             FeatureFlag.SDK_DEVICE_GESTURE_DISABLED.activationMode,
         )
     }
+
+    @Test
+    fun sessionsV2IsImmediate() {
+        assertEquals("sdk_sessions_v2", FeatureFlag.SDK_SESSIONS_V2.key)
+        assertEquals(
+            FeatureActivationMode.IMMEDIATE,
+            FeatureFlag.SDK_SESSIONS_V2.activationMode,
+        )
+    }
 }
 
 class FeatureManagerTest {
