@@ -63,7 +63,9 @@ enum class FeatureFlag(
     /**
      * Routes session reporting through the sessions API instead of the legacy session paths.
      * IMMEDIATE because hosts capture the value once at session start, so a session never mixes
-     * paths and a kill switch reaches the next session without a cold start.
+     * paths and a kill switch reaches the next session without a cold start. Session logic must
+     * read the value captured on the session record, not [FeatureManager.isEnabled], which can
+     * change mid-session.
      */
     SDK_SESSIONS_V2_API_CUTOVER(
         "sdk_sessions_v2_api_cutover",
