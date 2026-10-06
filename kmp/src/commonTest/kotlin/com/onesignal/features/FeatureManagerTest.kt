@@ -51,11 +51,11 @@ class FeatureFlagTest {
     }
 
     @Test
-    fun sessionsV2IsImmediate() {
-        assertEquals("sdk_sessions_v2", FeatureFlag.SDK_SESSIONS_V2.key)
+    fun sessionsV2ApiCutoverIsImmediate() {
+        assertEquals("sdk_sessions_v2_api_cutover", FeatureFlag.SDK_SESSIONS_V2_API_CUTOVER.key)
         assertEquals(
             FeatureActivationMode.IMMEDIATE,
-            FeatureFlag.SDK_SESSIONS_V2.activationMode,
+            FeatureFlag.SDK_SESSIONS_V2_API_CUTOVER.activationMode,
         )
     }
 }

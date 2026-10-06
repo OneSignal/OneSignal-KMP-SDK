@@ -65,8 +65,8 @@ enum class FeatureFlag(
      * IMMEDIATE because hosts capture the value once at session start, so a session never mixes
      * paths and a kill switch reaches the next session without a cold start.
      */
-    SDK_SESSIONS_V2(
-        "sdk_sessions_v2",
+    SDK_SESSIONS_V2_API_CUTOVER(
+        "sdk_sessions_v2_api_cutover",
         FeatureActivationMode.IMMEDIATE,
     ),
     ;
