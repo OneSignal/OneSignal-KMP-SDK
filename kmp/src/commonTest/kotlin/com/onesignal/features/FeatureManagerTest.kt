@@ -78,6 +78,15 @@ class FeatureFlagTest {
         assertTrue(present.isEnabled(FeatureFlag.SDK_NEVER_CRASH_ENABLED))
         assertEquals(setOf(FeatureFlag.SDK_NEVER_CRASH_ENABLED.key), appStartupKeysIn(listOf("SDK_Never_Crash_Enabled")))
     }
+
+    @Test
+    fun sessionsV2ApiCutoverIsImmediate() {
+        assertEquals("sdk_sessions_v2_api_cutover", FeatureFlag.SDK_SESSIONS_V2_API_CUTOVER.key)
+        assertEquals(
+            FeatureActivationMode.IMMEDIATE,
+            FeatureFlag.SDK_SESSIONS_V2_API_CUTOVER.activationMode,
+        )
+    }
 }
 
 class FeatureManagerTest {
