@@ -49,6 +49,15 @@ class FeatureFlagTest {
             FeatureFlag.SDK_DEVICE_GESTURE_DISABLED.activationMode,
         )
     }
+
+    @Test
+    fun sessionsV2ApiCutoverIsImmediate() {
+        assertEquals("sdk_sessions_v2_api_cutover", FeatureFlag.SDK_SESSIONS_V2_API_CUTOVER.key)
+        assertEquals(
+            FeatureActivationMode.IMMEDIATE,
+            FeatureFlag.SDK_SESSIONS_V2_API_CUTOVER.activationMode,
+        )
+    }
 }
 
 class FeatureManagerTest {
