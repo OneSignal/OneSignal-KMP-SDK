@@ -59,6 +59,15 @@ enum class FeatureFlag(
         "sdk_device_gesture_disabled",
         FeatureActivationMode.IMMEDIATE,
     ),
+
+    /**
+     * Builds SDK dispatchers on a bootstrap thread instead of the first caller.
+     * APP_STARTUP because the pools live for the process. Absent means off.
+     */
+    SDK_DISPATCHER_BOOTSTRAP(
+        "sdk_dispatcher_bootstrap",
+        FeatureActivationMode.APP_STARTUP,
+    ),
     ;
 
     fun isEnabledIn(enabledKeys: Set<String>): Boolean = enabledKeys.contains(key)

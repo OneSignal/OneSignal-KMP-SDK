@@ -49,6 +49,18 @@ class FeatureFlagTest {
             FeatureFlag.SDK_DEVICE_GESTURE_DISABLED.activationMode,
         )
     }
+
+    @Test
+    fun dispatcherBootstrapIsAppStartupAndOffWhenAbsent() {
+        assertEquals("sdk_dispatcher_bootstrap", FeatureFlag.SDK_DISPATCHER_BOOTSTRAP.key)
+        assertEquals(
+            FeatureActivationMode.APP_STARTUP,
+            FeatureFlag.SDK_DISPATCHER_BOOTSTRAP.activationMode,
+        )
+        val manager = FeatureManager()
+        manager.refresh(emptyList(), applyAppStartupFlags = true)
+        assertFalse(manager.isEnabled(FeatureFlag.SDK_DISPATCHER_BOOTSTRAP))
+    }
 }
 
 class FeatureManagerTest {
