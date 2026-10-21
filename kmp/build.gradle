@@ -347,7 +347,8 @@ if (!publishSharedKmp) {
              'FeatureFlagsClient', 'IFeatureFlagsHttp', 'FeatureManager', 'FeatureFlag',
              'DeferredFeatureActivation', 'RemoteFeatureFlagsFetchOutcome',
              'RemoteFeatureFlagsResult', 'RemoteFeatureFlagsUnavailableReason',
-             'FeatureFlagMetadata'].each { publicType ->
+             'FeatureFlagMetadata', 'StartupFlags', 'StartupFlagsSource', 'StartupFlagsLatch',
+             'IStartupFlagsStore'].each { publicType ->
                 if (!headerText.contains("swift_name(\"${publicType}\")")) {
                     throw new GradleException("Generated Objective-C header does not expose ${publicType}")
                 }

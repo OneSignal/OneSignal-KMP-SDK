@@ -68,8 +68,8 @@ class FeatureManager {
     ): List<DeferredFeatureActivation> = refreshAtStartup(remoteKeys, startup, emptyList())
 
     /**
-     * First refresh: APP_STARTUP flags latch from [startup], IMMEDIATE flags from [remoteKeys].
-     * Later [refresh] calls never latch APP_STARTUP flags from remote keys.
+     * APP_STARTUP flags latch from [startup] (even after an earlier [refresh]), IMMEDIATE flags from
+     * [remoteKeys]. Startup flags whose remote value differs are returned as deferred. Only the first call latches.
      */
     fun refreshAtStartup(
         remoteKeys: List<String>,
@@ -77,8 +77,9 @@ class FeatureManager {
         localOverrides: List<String>,
     ): List<DeferredFeatureActivation> =
         lock.withLock {
-            startupKeys = startup.keys
-            refreshLocked(remoteKeys, true, localOverrides)
+            val firstSnapshot = startupKeys == null
+            if (firstSnapshot) startupKeys = startup.keys
+            refreshLocked(remoteKeys, true, localOverrides, latchFromSnapshot = firstSnapshot)
         }
 
     // Callers hold [lock]; PlatformLock is not reentrant on iOS.
@@ -86,6 +87,7 @@ class FeatureManager {
         remoteKeys: List<String>,
         applyAppStartupFlags: Boolean,
         localOverrides: List<String>,
+        latchFromSnapshot: Boolean = false,
     ): List<DeferredFeatureActivation> {
         val overrideKeys = localOverrides.mapTo(HashSet()) { canonicalizeFeatureFlagId(it) }
         val enabledKeys = remoteKeys.mapTo(HashSet()) { canonicalizeFeatureFlagId(it) } + overrideKeys
@@ -102,11 +104,14 @@ class FeatureManager {
                     // [featureStates], including those that resolved to false.
                     val alreadyLatched = nextStates.containsKey(feature)
                     val applyStartup =
-                        !alreadyLatched ||
+                        latchFromSnapshot || !alreadyLatched ||
                             (applyAppStartupFlags && !hasCompletedFirstRefresh)
                     if (applyStartup) {
-                        nextStates[feature] =
-                            if (startup != null) feature.key in startup || feature.key in overrideKeys else desired
+                        val latched = if (startup != null) feature.key in startup || feature.key in overrideKeys else desired
+                        nextStates[feature] = latched
+                        if (latched != desired) {
+                            deferred.add(DeferredFeatureActivation(feature.key, desiredEnabled = desired, latchedEnabled = latched))
+                        }
                     } else {
                         val latched = nextStates[feature] ?: false
                         if (latched != desired) {

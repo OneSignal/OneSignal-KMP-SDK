@@ -1,5 +1,7 @@
 package com.onesignal.features
 
+import kotlin.coroutines.cancellation.CancellationException
+
 /** Where a process's [StartupFlags] came from. Anything but [STORE] means every startup flag is off. */
 enum class StartupFlagsSource {
     STORE,
@@ -17,12 +19,8 @@ class StartupFlags(
     val keys: Set<String> =
         if (source == StartupFlagsSource.STORE) keys.mapTo(LinkedHashSet()) { canonicalizeFeatureFlagId(it) } else emptySet()
 
-    /** Only APP_STARTUP flags: IMMEDIATE flags change mid-run, so a startup copy would go stale. */
-    @Throws(IllegalArgumentException::class)
-    fun isEnabled(flag: FeatureFlag): Boolean {
-        require(flag.activationMode == FeatureActivationMode.APP_STARTUP) { "${flag.key} is not APP_STARTUP" }
-        return flag.key in keys
-    }
+    /** False for IMMEDIATE flags: they change mid-run, so a startup copy would go stale. */
+    fun isEnabled(flag: FeatureFlag): Boolean = flag.activationMode == FeatureActivationMode.APP_STARTUP && flag.key in keys
 }
 
 /**
@@ -55,6 +53,9 @@ class StartupFlagsLatch {
     private val lock = PlatformLock()
     private var snapshot: StartupFlags? = null
 
+    // Separate from [lock]: a slow durable write must not block a snapshot read, often on main.
+    private val mirrorLock = PlatformLock()
+
     /** [store] runs only until a snapshot is taken; null means the host has no store yet. */
     fun snapshot(store: () -> IStartupFlagsStore?): StartupFlags =
         lock.withLock {
@@ -66,13 +67,31 @@ class StartupFlagsLatch {
     fun mirror(
         store: IStartupFlagsStore,
         remoteKeys: Collection<String>,
-    ): Boolean {
-        val wanted = appStartupKeysIn(remoteKeys)
-        if (store.read() == wanted) return false
-        store.write(wanted)
-        return true
-    }
+    ): Boolean = mirror(store) { remoteKeys }
 
+    /** [currentKeys] runs under the mirror lock, so racing mirrors always leave the latest keys stored. */
+    @Throws(Exception::class)
+    @Suppress("TooGenericExceptionCaught", "SwallowedException")
+    fun mirror(
+        store: IStartupFlagsStore,
+        currentKeys: () -> Collection<String>,
+    ): Boolean =
+        mirrorLock.withLock {
+            val wanted = appStartupKeysIn(currentKeys())
+            // An unreadable store counts as changed: skipping the write would leave it unreadable for good.
+            val stored =
+                try {
+                    store.read()
+                } catch (t: Throwable) {
+                    if (t is CancellationException) throw t
+                    null
+                }
+            if (stored == wanted) return@withLock false
+            store.write(wanted)
+            true
+        }
+
+    // Errors other than cancellation are cached too: re-reading could give a later caller a different answer.
     @Suppress("TooGenericExceptionCaught")
     private fun read(store: IStartupFlagsStore?): StartupFlags {
         if (store == null) return StartupFlags(StartupFlagsSource.NO_STORE, emptySet())
@@ -80,6 +99,7 @@ class StartupFlagsLatch {
             try {
                 store.read()
             } catch (t: Throwable) {
+                if (t is CancellationException) throw t
                 return StartupFlags(StartupFlagsSource.UNREADABLE, emptySet())
             } ?: return StartupFlags(StartupFlagsSource.MISSING, emptySet())
         return StartupFlags(StartupFlagsSource.STORE, appStartupKeysIn(stored))

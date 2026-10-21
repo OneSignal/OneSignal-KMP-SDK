@@ -1,5 +1,6 @@
 package com.onesignal.features
 
+import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -9,13 +10,14 @@ import kotlin.test.assertTrue
 private class FakeStartupFlagsStore(
     var stored: Set<String>? = null,
     var failReads: Boolean = false,
+    var readFailure: () -> Throwable = { IllegalStateException("locked") },
 ) : IStartupFlagsStore {
     var reads = 0
     var writes = 0
 
     override fun read(): Set<String>? {
         reads++
-        if (failReads) throw IllegalStateException("locked")
+        if (failReads) throw readFailure()
         return stored
     }
 
@@ -63,9 +65,50 @@ class StartupFlagsTest {
     }
 
     @Test
-    fun isEnabledRejectsImmediateFlags() {
-        val flags = StartupFlagsLatch().snapshot { FakeStartupFlagsStore(emptySet()) }
-        assertFailsWith<IllegalArgumentException> { flags.isEnabled(immediate) }
+    fun isEnabledIsFalseForImmediateFlags() {
+        val flags = StartupFlags(StartupFlagsSource.STORE, setOf(immediate.key))
+        assertFalse(flags.isEnabled(immediate))
+    }
+
+    @Test
+    fun aCancelledReadIsNotCachedAsUnreadable() {
+        val store = FakeStartupFlagsStore(setOf(startup.key), failReads = true, readFailure = { CancellationException("cancelled") })
+        val latch = StartupFlagsLatch()
+        assertFailsWith<CancellationException> { latch.snapshot { store } }
+
+        store.failReads = false
+        assertTrue(latch.snapshot { store }.isEnabled(startup))
+    }
+
+    @Test
+    fun mirrorWritesWhenTheStoreIsUnreadable() {
+        val store = FakeStartupFlagsStore(failReads = true)
+
+        assertTrue(StartupFlagsLatch().mirror(store, listOf(startup.key)))
+
+        assertEquals(setOf(startup.key), store.stored)
+        store.failReads = false
+        assertTrue(StartupFlagsLatch().snapshot { store }.isEnabled(startup))
+    }
+
+    @Test
+    fun refreshAtStartupLatchesTheSnapshotEvenAfterAnEarlierRefresh() {
+        val manager = FeatureManager()
+        manager.refresh(listOf(startup.key), applyAppStartupFlags = true)
+        assertTrue(manager.isEnabled(startup))
+
+        manager.refreshAtStartup(listOf(startup.key), StartupFlags(StartupFlagsSource.STORE, emptySet()))
+
+        assertFalse(manager.isEnabled(startup))
+    }
+
+    @Test
+    fun refreshAtStartupReportsASnapshotThatDisagreesWithRemote() {
+        val manager = FeatureManager()
+
+        val deferred = manager.refreshAtStartup(listOf(startup.key), StartupFlags(StartupFlagsSource.MISSING, emptySet()))
+
+        assertEquals(listOf(DeferredFeatureActivation(startup.key, desiredEnabled = true, latchedEnabled = false)), deferred)
     }
 
     @Test
