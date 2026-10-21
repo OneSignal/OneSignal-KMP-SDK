@@ -11,8 +11,12 @@ enum class StartupFlagsSource {
 /** The [FeatureActivationMode.APP_STARTUP] flags as one process latched them. */
 class StartupFlags(
     val source: StartupFlagsSource,
-    val keys: Set<String>,
+    keys: Set<String>,
 ) {
+    /** Canonical keys, and always empty unless [source] is [StartupFlagsSource.STORE]. */
+    val keys: Set<String> =
+        if (source == StartupFlagsSource.STORE) keys.mapTo(LinkedHashSet()) { canonicalizeFeatureFlagId(it) } else emptySet()
+
     /** Only APP_STARTUP flags: IMMEDIATE flags change mid-run, so a startup copy would go stale. */
     @Throws(IllegalArgumentException::class)
     fun isEnabled(flag: FeatureFlag): Boolean {
@@ -22,14 +26,16 @@ class StartupFlags(
 }
 
 /**
- * Platform storage for the startup flags: a small store the host can read before SDK init without
- * loading its main persisted state. Android uses its own SharedPreferences file.
+ * Platform storage for the startup flags, readable before SDK init without loading the host's main
+ * persisted state. Implementations must not call back into [StartupFlagsLatch]: its lock is not reentrant.
  */
 interface IStartupFlagsStore {
-    /** Keys from the last [write], or null when nothing was ever written. May throw when unreadable. */
+    /** Keys from the last [write], or null only when nothing was ever written. Throw when unreadable. */
+    @Throws(Exception::class)
     fun read(): Set<String>?
 
-    /** Must be durable when it returns: the next process reads it at startup. */
+    /** Must be durable when it returns, since the next process reads it at startup. Throw on failure. */
+    @Throws(Exception::class)
     fun write(keys: Set<String>)
 }
 
@@ -42,21 +48,21 @@ fun appStartupKeysIn(remoteKeys: Collection<String>): Set<String> {
 }
 
 /**
- * Reads the startup flags once per process and keeps the store in step with the remote flags.
- * Hosts keep one instance for the process. The first [snapshot] wins, so code that runs before
- * init and [FeatureManager.refreshAtStartup] latch the same values.
+ * Reads the startup flags once per process and mirrors remote flags back for the next one.
+ * Keep one instance per process: the first [snapshot] wins, including an unreadable one.
  */
 class StartupFlagsLatch {
     private val lock = PlatformLock()
     private var snapshot: StartupFlags? = null
 
-    /** [store] is only called on the first read; null means the host has no store yet. */
+    /** [store] runs only until a snapshot is taken; null means the host has no store yet. */
     fun snapshot(store: () -> IStartupFlagsStore?): StartupFlags =
         lock.withLock {
             snapshot ?: read(store()).also { snapshot = it }
         }
 
     /** Writes the APP_STARTUP subset of [remoteKeys] for the next process. Returns false when unchanged. */
+    @Throws(Exception::class)
     fun mirror(
         store: IStartupFlagsStore,
         remoteKeys: Collection<String>,

@@ -14,20 +14,8 @@ data class DeferredFeatureActivation(
 )
 
 /**
- * In-process latch for [FeatureFlag] state.
- *
- * Hosts pass the latest trusted remote keys (from cache at process start, then
- * from [FeatureFlagsClient] after a successful fetch). Persistence, HTTP, and
- * lifecycle stay on the platform.
- *
- * Call [refresh] with [applyAppStartupFlags] `true` once at process start, then
- * `false` for later updates so [FeatureActivationMode.APP_STARTUP] flags do not
- * flip mid-run. A second `true` is ignored for already-latched APP_STARTUP flags;
- * [FeatureManager] tracks that initialization itself. [refresh] returns any
- * APP_STARTUP changes that were held.
- *
- * State updates are guarded by an internal lock so [isEnabled] / [refresh] /
- * [enabledFeatureKeys] are safe across host threads.
+ * Thread-safe per-process latch for [FeatureFlag] state. Call [refreshAtStartup] once with the [StartupFlagsLatch] snapshot, then [refresh] with `false` after fetches.
+ * `refresh(applyAppStartupFlags = true)` never reads the startup store, so APP_STARTUP flags would not match code that ran before init.
  */
 class FeatureManager {
     private val lock = PlatformLock()
@@ -80,9 +68,8 @@ class FeatureManager {
     ): List<DeferredFeatureActivation> = refreshAtStartup(remoteKeys, startup, emptyList())
 
     /**
-     * First refresh for a host that latches APP_STARTUP flags from [startup] (see [StartupFlagsLatch]).
-     * IMMEDIATE flags still follow [remoteKeys], and later [refresh] calls never latch APP_STARTUP
-     * flags from remote keys, so [isEnabled] matches what code running before init latched.
+     * First refresh: APP_STARTUP flags latch from [startup], IMMEDIATE flags from [remoteKeys].
+     * Later [refresh] calls never latch APP_STARTUP flags from remote keys.
      */
     fun refreshAtStartup(
         remoteKeys: List<String>,

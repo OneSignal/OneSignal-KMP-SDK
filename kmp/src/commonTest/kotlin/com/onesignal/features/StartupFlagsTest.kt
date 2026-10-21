@@ -69,6 +69,30 @@ class StartupFlagsTest {
     }
 
     @Test
+    fun onlyAStoreSourceCanReportAFlagOn() {
+        for (source in StartupFlagsSource.entries - StartupFlagsSource.STORE) {
+            val flags = StartupFlags(source, setOf(startup.key))
+            assertEquals(emptySet(), flags.keys, "$source")
+            assertFalse(flags.isEnabled(startup), "$source")
+        }
+        assertTrue(StartupFlags(StartupFlagsSource.STORE, setOf(startup.key)).isEnabled(startup))
+    }
+
+    @Test
+    fun storeKeysAreCanonical() {
+        val flags = StartupFlags(StartupFlagsSource.STORE, setOf("SDK_Custom_Logging"))
+        assertEquals(setOf(startup.key), flags.keys)
+        assertTrue(flags.isEnabled(startup))
+    }
+
+    @Test
+    fun refreshAtStartupIgnoresKeysFromANonStoreSource() {
+        val manager = FeatureManager()
+        manager.refreshAtStartup(listOf(startup.key), StartupFlags(StartupFlagsSource.UNREADABLE, setOf(startup.key)))
+        assertFalse(manager.isEnabled(startup))
+    }
+
+    @Test
     fun mirrorWritesOnlyWhenTheStartupSubsetChanges() {
         val store = FakeStartupFlagsStore()
         val latch = StartupFlagsLatch()
