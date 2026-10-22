@@ -14,25 +14,16 @@ data class DeferredFeatureActivation(
 )
 
 /**
- * In-process latch for [FeatureFlag] state.
- *
- * Hosts pass the latest trusted remote keys (from cache at process start, then
- * from [FeatureFlagsClient] after a successful fetch). Persistence, HTTP, and
- * lifecycle stay on the platform.
- *
- * Call [refresh] with [applyAppStartupFlags] `true` once at process start, then
- * `false` for later updates so [FeatureActivationMode.APP_STARTUP] flags do not
- * flip mid-run. A second `true` is ignored for already-latched APP_STARTUP flags;
- * [FeatureManager] tracks that initialization itself. [refresh] returns any
- * APP_STARTUP changes that were held.
- *
- * State updates are guarded by an internal lock so [isEnabled] / [refresh] /
- * [enabledFeatureKeys] are safe across host threads.
+ * Thread-safe per-process latch for [FeatureFlag] state. Call [refreshAtStartup] once with the [StartupFlagsLatch] snapshot, then [refresh] with `false` after fetches.
+ * `refresh(applyAppStartupFlags = true)` never reads the startup store, so APP_STARTUP flags would not match code that ran before init.
  */
 class FeatureManager {
     private val lock = PlatformLock()
     private var featureStates: Map<FeatureFlag, Boolean> = emptyMap()
     private var hasCompletedFirstRefresh = false
+
+    // Once set, APP_STARTUP flags latch from here and never from remote keys.
+    private var startupKeys: Set<String>? = null
 
     fun isEnabled(feature: FeatureFlag): Boolean =
         lock.withLock {
@@ -69,45 +60,75 @@ class FeatureManager {
         remoteKeys: List<String>,
         applyAppStartupFlags: Boolean,
         localOverrides: List<String>,
+    ): List<DeferredFeatureActivation> = lock.withLock { refreshLocked(remoteKeys, applyAppStartupFlags, localOverrides) }
+
+    fun refreshAtStartup(
+        remoteKeys: List<String>,
+        startup: StartupFlags,
+    ): List<DeferredFeatureActivation> = refreshAtStartup(remoteKeys, startup, emptyList())
+
+    /**
+     * APP_STARTUP flags latch from [startup] (even after an earlier [refresh]), IMMEDIATE flags from
+     * [remoteKeys]. Startup flags whose remote value differs are returned as deferred. Only the first call latches.
+     */
+    fun refreshAtStartup(
+        remoteKeys: List<String>,
+        startup: StartupFlags,
+        localOverrides: List<String>,
     ): List<DeferredFeatureActivation> =
         lock.withLock {
-            val enabledKeys =
-                (remoteKeys.asSequence() + localOverrides.asSequence())
-                    .map { canonicalizeFeatureFlagId(it) }
-                    .toSet()
+            val firstSnapshot = startupKeys == null
+            if (firstSnapshot) startupKeys = startup.keys
+            refreshLocked(remoteKeys, true, localOverrides, latchFromSnapshot = firstSnapshot)
+        }
 
-            val nextStates = featureStates.toMutableMap()
-            val deferred = mutableListOf<DeferredFeatureActivation>()
-            for (feature in FeatureFlag.entries) {
-                val desired = feature.isEnabledIn(enabledKeys)
-                when (feature.activationMode) {
-                    FeatureActivationMode.IMMEDIATE -> nextStates[feature] = desired
-                    FeatureActivationMode.APP_STARTUP -> {
-                        // After the first refresh every catalog flag is present in
-                        // [featureStates], including those that resolved to false.
-                        val alreadyLatched = nextStates.containsKey(feature)
-                        val applyStartup =
-                            !alreadyLatched ||
-                                (applyAppStartupFlags && !hasCompletedFirstRefresh)
-                        if (applyStartup) {
-                            nextStates[feature] = desired
-                        } else {
-                            val latched = nextStates[feature] ?: false
-                            if (latched != desired) {
-                                deferred.add(
-                                    DeferredFeatureActivation(
-                                        key = feature.key,
-                                        desiredEnabled = desired,
-                                        latchedEnabled = latched,
-                                    ),
-                                )
-                            }
+    // Callers hold [lock]; PlatformLock is not reentrant on iOS.
+    private fun refreshLocked(
+        remoteKeys: List<String>,
+        applyAppStartupFlags: Boolean,
+        localOverrides: List<String>,
+        latchFromSnapshot: Boolean = false,
+    ): List<DeferredFeatureActivation> {
+        val overrideKeys = localOverrides.mapTo(HashSet()) { canonicalizeFeatureFlagId(it) }
+        val enabledKeys = remoteKeys.mapTo(HashSet()) { canonicalizeFeatureFlagId(it) } + overrideKeys
+        val startup = startupKeys
+
+        val nextStates = featureStates.toMutableMap()
+        val deferred = mutableListOf<DeferredFeatureActivation>()
+        for (feature in FeatureFlag.entries) {
+            val desired = feature.isEnabledIn(enabledKeys)
+            when (feature.activationMode) {
+                FeatureActivationMode.IMMEDIATE -> nextStates[feature] = desired
+                FeatureActivationMode.APP_STARTUP -> {
+                    // After the first refresh every catalog flag is present in
+                    // [featureStates], including those that resolved to false.
+                    val alreadyLatched = nextStates.containsKey(feature)
+                    val applyStartup =
+                        latchFromSnapshot || !alreadyLatched ||
+                            (applyAppStartupFlags && !hasCompletedFirstRefresh)
+                    if (applyStartup) {
+                        val latched = if (startup != null) feature.key in startup || feature.key in overrideKeys else desired
+                        nextStates[feature] = latched
+                        if (latched != desired) {
+                            deferred.add(DeferredFeatureActivation(feature.key, desiredEnabled = desired, latchedEnabled = latched))
+                        }
+                    } else {
+                        val latched = nextStates[feature] ?: false
+                        if (latched != desired) {
+                            deferred.add(
+                                DeferredFeatureActivation(
+                                    key = feature.key,
+                                    desiredEnabled = desired,
+                                    latchedEnabled = latched,
+                                ),
+                            )
                         }
                     }
                 }
             }
-            featureStates = nextStates
-            hasCompletedFirstRefresh = true
-            deferred
         }
+        featureStates = nextStates
+        hasCompletedFirstRefresh = true
+        return deferred
+    }
 }
