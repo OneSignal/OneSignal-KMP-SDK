@@ -59,6 +59,15 @@ enum class FeatureFlag(
         "sdk_device_gesture_disabled",
         FeatureActivationMode.IMMEDIATE,
     ),
+
+    /**
+     * Present means the never-crash init path. APP_STARTUP because the choice is once per process.
+     * Absent means the legacy path, so the rollout stays off until Turbine sends the flag.
+     */
+    SDK_NEVER_CRASH_ENABLED(
+        "sdk_never_crash_enabled",
+        FeatureActivationMode.APP_STARTUP,
+    ),
     ;
 
     fun isEnabledIn(enabledKeys: Set<String>): Boolean = enabledKeys.contains(key)

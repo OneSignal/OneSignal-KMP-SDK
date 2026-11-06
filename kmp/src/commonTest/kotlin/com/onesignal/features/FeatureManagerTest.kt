@@ -49,6 +49,15 @@ class FeatureFlagTest {
             FeatureFlag.SDK_DEVICE_GESTURE_DISABLED.activationMode,
         )
     }
+
+    @Test
+    fun neverCrashRolloutIsAppStartup() {
+        assertEquals("sdk_never_crash_enabled", FeatureFlag.SDK_NEVER_CRASH_ENABLED.key)
+        assertEquals(
+            FeatureActivationMode.APP_STARTUP,
+            FeatureFlag.SDK_NEVER_CRASH_ENABLED.activationMode,
+        )
+    }
 }
 
 class FeatureManagerTest {
@@ -58,6 +67,17 @@ class FeatureManagerTest {
         manager.refresh(emptyList(), applyAppStartupFlags = true)
         assertFalse(manager.isEnabled(FeatureFlag.SDK_IDENTITY_VERIFICATION))
         assertEquals(emptyList(), manager.enabledFeatureKeys())
+    }
+
+    @Test
+    fun neverCrashRolloutFollowsTheCachedKey() {
+        val off = FeatureManager()
+        off.refresh(emptyList(), applyAppStartupFlags = true)
+        assertFalse(off.isEnabled(FeatureFlag.SDK_NEVER_CRASH_ENABLED))
+
+        val on = FeatureManager()
+        on.refresh(listOf("SDK_Never_Crash_Enabled"), applyAppStartupFlags = true)
+        assertTrue(on.isEnabled(FeatureFlag.SDK_NEVER_CRASH_ENABLED))
     }
 
     @Test
