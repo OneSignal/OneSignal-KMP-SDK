@@ -61,6 +61,23 @@ class FeatureFlagTest {
         manager.refresh(emptyList(), applyAppStartupFlags = true)
         assertFalse(manager.isEnabled(FeatureFlag.SDK_DISPATCHER_BOOTSTRAP))
     }
+
+    @Test
+    fun neverCrashRolloutIsAppStartupAndOffWhenAbsent() {
+        assertEquals("sdk_never_crash_enabled", FeatureFlag.SDK_NEVER_CRASH_ENABLED.key)
+        assertEquals(
+            FeatureActivationMode.APP_STARTUP,
+            FeatureFlag.SDK_NEVER_CRASH_ENABLED.activationMode,
+        )
+        val absent = FeatureManager()
+        absent.refresh(emptyList(), applyAppStartupFlags = true)
+        assertFalse(absent.isEnabled(FeatureFlag.SDK_NEVER_CRASH_ENABLED))
+
+        val present = FeatureManager()
+        present.refresh(listOf("SDK_Never_Crash_Enabled"), applyAppStartupFlags = true)
+        assertTrue(present.isEnabled(FeatureFlag.SDK_NEVER_CRASH_ENABLED))
+        assertEquals(setOf(FeatureFlag.SDK_NEVER_CRASH_ENABLED.key), appStartupKeysIn(listOf("SDK_Never_Crash_Enabled")))
+    }
 }
 
 class FeatureManagerTest {
