@@ -196,4 +196,68 @@ class OtlpLogEncoderTest {
         val record = parseProto(bytes).message(1).message(2).message(2)
         assertEquals(128, record.all(6).size)
     }
+
+    @Test
+    fun encodeChunkedReturnsNoPayloadsForEmptyBatch() {
+        assertEquals(0, OtlpLogEncoder.encodeChunked(emptyMap(), emptyList(), 65_536).size)
+    }
+
+    @Test
+    fun encodeChunkedLeavesUnderCapBatchAsSinglePayload() {
+        val records = (0 until 5).map { bulkyRecord("r$it", valueLength = 10) }
+
+        val payloads = OtlpLogEncoder.encodeChunked(RESOURCE_ATTRS, records, maxPayloadBytes = 65_536)
+
+        assertEquals(1, payloads.size)
+        // Identical to the unsplit encoding, so staying under the cap costs nothing on the wire.
+        assertEquals(
+            OtlpLogEncoder.encode(RESOURCE_ATTRS, records).toList(),
+            payloads.single().toList(),
+        )
+    }
+
+    @Test
+    fun encodeChunkedSplitsOversizedBatchKeepingEveryRecord() {
+        // 8 records x ~32 KB attribute is ~256 KB unsplit, four times the cap.
+        val records = (0 until 8).map { bulkyRecord("r$it", valueLength = 32_000) }
+        val cap = 65_536
+
+        val payloads = OtlpLogEncoder.encodeChunked(RESOURCE_ATTRS, records, maxPayloadBytes = cap)
+
+        assertTrue(payloads.size > 1, "expected the batch to be split, got ${payloads.size} payload(s)")
+        payloads.forEach { assertTrue(it.size <= cap, "payload of ${it.size} B exceeds the $cap B cap") }
+        // No record is dropped in the split, and none is duplicated across payloads.
+        assertEquals(records.map { it.body }, payloads.flatMap { bodiesIn(it) })
+    }
+
+    @Test
+    fun encodeChunkedEmitsSingleOversizedRecordRatherThanDroppingIt() {
+        // One record cannot be split further, and is lost either way. Posting it keeps the loss
+        // visible in the ingestion service's reject metrics instead of vanishing on-device.
+        val record = bulkyRecord("huge", valueLength = 32_000)
+
+        val payloads = OtlpLogEncoder.encodeChunked(RESOURCE_ATTRS, listOf(record), maxPayloadBytes = 1_024)
+
+        assertEquals(1, payloads.size)
+        assertTrue(payloads.single().size > 1_024)
+        assertEquals(listOf("huge"), bodiesIn(payloads.single()))
+    }
+
+    private fun bulkyRecord(body: String, valueLength: Int) =
+        EncodableRecord(
+            severity = LogSeverity.ERROR,
+            body = body,
+            attributes = mapOf("exception.stacktrace" to "x".repeat(valueLength)),
+            timeUnixNanos = 1L,
+        )
+
+    /** Record bodies in a payload, in wire order. */
+    private fun bodiesIn(payload: ByteArray): List<String> =
+        parseProto(payload).message(1).message(2).all(2).map {
+            parseProto(it.bytes()).message(5).string(1)
+        }
+
+    private companion object {
+        val RESOURCE_ATTRS = mapOf("ossdk.install_id" to "abc", "os.name" to "Android")
+    }
 }

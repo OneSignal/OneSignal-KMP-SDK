@@ -100,29 +100,31 @@ internal class ExportRetrier(
      * Completing [abortSignal] cuts a backoff short and prevents further attempts; the
      * attempt already in flight is left to finish.
      *
-     * Returns true only if [attempt] ultimately reported success.
+     * Returns how the export ended: [ExportAttempt.SUCCESS], [ExportAttempt.PERMANENT] if the
+     * request itself was rejected, or [ExportAttempt.RETRYABLE] if it gave up while the failure
+     * was still transient (attempt cap, backoff budget, or abort). Callers exporting several
+     * payloads need that split: only the last is evidence the connection is unusable.
      */
     suspend fun execute(
         abortSignal: Deferred<Unit> = CompletableDeferred(),
         attempt: suspend () -> ExportAttempt,
-    ): Boolean {
+    ): ExportAttempt {
         var attemptsMade = 0
         var backoffMillis = policy.initialBackoffMillis
         var backoffSpentMillis = 0L
 
         while (true) {
             attemptsMade++
-            when (attempt()) {
-                ExportAttempt.SUCCESS -> return true
-                ExportAttempt.PERMANENT -> return false
+            when (val outcome = attempt()) {
+                ExportAttempt.SUCCESS, ExportAttempt.PERMANENT -> return outcome
                 ExportAttempt.RETRYABLE -> Unit
             }
 
-            if (attemptsMade >= policy.maxAttempts) return false
-            if (abortSignal.isCompleted) return false
+            if (attemptsMade >= policy.maxAttempts) return ExportAttempt.RETRYABLE
+            if (abortSignal.isCompleted) return ExportAttempt.RETRYABLE
 
             val remainingBackoffMillis = policy.maxTotalBackoffMillis - backoffSpentMillis
-            if (remainingBackoffMillis <= 0) return false
+            if (remainingBackoffMillis <= 0) return ExportAttempt.RETRYABLE
 
             val waitMillis = min(jittered(backoffMillis), remainingBackoffMillis)
             backoffSpentMillis += waitMillis
@@ -130,7 +132,7 @@ internal class ExportRetrier(
 
             // Sleep for the backoff, but wake early if the caller aborts.
             val aborted = withTimeoutOrNull(waitMillis) { abortSignal.await() } != null
-            if (aborted) return false
+            if (aborted) return ExportAttempt.RETRYABLE
         }
     }
 
