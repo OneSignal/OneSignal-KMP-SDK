@@ -17,6 +17,11 @@ object LogLoggingHelper {
     ) {
         val attributes =
             buildMap {
+                // Duplicates body/severity on the wire, but the ingestion service buckets
+                // severity_number (1..8 all become DEBUG) and drops severity_text, so log.level
+                // is the only thing separating VERBOSE from DEBUG once the record lands.
+                put("log.message", message)
+                put("log.level", level)
                 if (exceptionType != null) put("exception.type", exceptionType)
                 if (exceptionMessage != null) put("exception.message", exceptionMessage)
                 if (exceptionStacktrace != null) put("exception.stacktrace", exceptionStacktrace)
