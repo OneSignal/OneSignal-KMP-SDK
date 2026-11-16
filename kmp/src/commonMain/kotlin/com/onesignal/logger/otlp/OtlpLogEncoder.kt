@@ -100,6 +100,34 @@ internal object OtlpLogEncoder {
         }.toByteArray()
     }
 
+    /**
+     * Splits into payloads of at most [maxPayloadBytes]. A lone over-cap record is still posted:
+     * it is lost either way, and a server-side reject is at least visible in ingestion metrics.
+     */
+    fun encodeChunked(
+        resourceAttributes: Map<String, String>,
+        records: List<EncodableRecord>,
+        maxPayloadBytes: Int,
+    ): List<ByteArray> {
+        if (records.isEmpty()) return emptyList()
+        return buildList { appendChunks(resourceAttributes, records, maxPayloadBytes) }
+    }
+
+    private fun MutableList<ByteArray>.appendChunks(
+        resourceAttributes: Map<String, String>,
+        records: List<EncodableRecord>,
+        maxPayloadBytes: Int,
+    ) {
+        val payload = encode(resourceAttributes, records)
+        if (payload.size <= maxPayloadBytes || records.size == 1) {
+            add(payload)
+            return
+        }
+        val mid = records.size / 2
+        appendChunks(resourceAttributes, records.subList(0, mid), maxPayloadBytes)
+        appendChunks(resourceAttributes, records.subList(mid, records.size), maxPayloadBytes)
+    }
+
     private fun encodeResource(attributes: Map<String, String>): ByteArray {
         val merged =
             buildMap {

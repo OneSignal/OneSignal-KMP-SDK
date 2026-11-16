@@ -47,6 +47,31 @@ class LogTelemetryTest {
     }
 
     @Test
+    fun oversizedBatchIsSplitAcrossRequestsInsteadOfDropped() = runTest {
+        val provider = FakePlatformProvider()
+        val http = FakeHttpSender()
+        val telemetry = remote(backgroundScope, provider, http)
+
+        // Each record carries a ~32 KB stacktrace, so one batch far exceeds the payload cap.
+        repeat(8) {
+            telemetry.emit(LogRecord(LogSeverity.ERROR, "r$it", mapOf("exception.stacktrace" to "x".repeat(32_000))))
+        }
+        telemetry.forceFlush()
+
+        assertTrue(http.sentRequests.size > 1, "expected several requests, got ${http.sentRequests.size}")
+        http.sentRequests.forEach {
+            assertTrue(it.body.size <= 65_536, "posted ${it.body.size} B, over the cap")
+        }
+        val bodies =
+            http.sentRequests.flatMap { req ->
+                parseProto(req.body).message(1).message(2).all(2).map {
+                    parseProto(it.bytes()).message(5).string(1)
+                }
+            }
+        assertEquals((0 until 8).map { "r$it" }, bodies)
+    }
+
+    @Test
     fun exportEncodedPostsRawBytes() = runTest {
         val provider = FakePlatformProvider()
         val http = FakeHttpSender()

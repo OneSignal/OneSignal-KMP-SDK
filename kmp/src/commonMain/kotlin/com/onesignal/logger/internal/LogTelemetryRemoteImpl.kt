@@ -39,6 +39,12 @@ internal class LogTelemetryRemoteImpl(
         private const val SCHEDULE_DELAY_MILLIS = 1_000L
 
         /**
+         * A Cloudflare WAF rule 403s POST /sdk/log bodies `gt 65536`, which [classifyStatus] reads
+         * as permanent, so an over-cap batch is dropped with no retry. Largest body it admits.
+         */
+        private const val MAX_PAYLOAD_BYTES = 65_536
+
+        /**
          * Cap so a hung HTTP send cannot block app teardown indefinitely. It only has to
          * cover a single send, not a retry cycle: [shutdownSignal] stops the retrier first,
          * so nothing here can be waiting out a backoff. Deliberately shorter than either
@@ -101,8 +107,10 @@ internal class LogTelemetryRemoteImpl(
      * both need, hence [shutdownSignal].
      */
     private suspend fun exportBatch(records: List<EncodableRecord>) {
-        val payload = OtlpLogEncoder.encode(getResourceAttributes(), records)
-        retrier.execute(abortSignal = shutdownSignal) { attemptPost(payload) }
+        val payloads = OtlpLogEncoder.encodeChunked(getResourceAttributes(), records, MAX_PAYLOAD_BYTES)
+        for (payload in payloads) {
+            retrier.execute(abortSignal = shutdownSignal) { attemptPost(payload) }
+        }
     }
 
     override suspend fun exportEncoded(payload: ByteArray): Boolean = post(payload)
