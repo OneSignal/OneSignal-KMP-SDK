@@ -27,6 +27,8 @@ internal class LogTelemetryCrashImpl(
 ) : ILogTelemetryCrash {
     override suspend fun emit(record: LogRecord) {
         val resourceAttributes = topLevelFields.getAttributes()
+        // Record attributes must win: a crash record's thread.name is the faulting thread,
+        // which the per-event emitting thread would otherwise overwrite.
         val merged = perEventFields.getAttributes() + record.attributes
         val encodable =
             EncodableRecord(
