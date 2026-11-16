@@ -72,6 +72,70 @@ class LogTelemetryTest {
     }
 
     @Test
+    fun aChunkGivingUpWhileRetryableStopsTheRemainingChunks() = runTest {
+        val provider = FakePlatformProvider()
+        // Offline: every send is a transport failure, so no chunk can succeed.
+        val http = FakeHttpSender(defaultResponse = LogHttpResponse(success = false, statusCode = -1))
+        val telemetry = remote(backgroundScope, provider, http)
+
+        repeat(8) {
+            telemetry.emit(LogRecord(LogSeverity.ERROR, "r$it", mapOf("exception.stacktrace" to "x".repeat(32_000))))
+        }
+        val startMillis = testScheduler.currentTime
+        telemetry.forceFlush()
+
+        // One chunk's retry cycle, not four. The batch splits into 4 chunks, so without the
+        // stop this is 20 posts and ~38s of backoff on a radio that is already failing.
+        assertEquals(5, http.sentRequests.size)
+        assertTrue(
+            testScheduler.currentTime - startMillis < 15_000,
+            "spent ${testScheduler.currentTime - startMillis} ms, more than a single retry cycle",
+        )
+    }
+
+    @Test
+    fun aPermanentlyRejectedChunkDoesNotStopItsSiblings() = runTest {
+        val provider = FakePlatformProvider()
+        val waf = WafBoundedSender()
+        val telemetry =
+            LogTelemetryRemoteImpl(
+                platformProvider = provider,
+                httpSender = waf,
+                topLevelFields = LogFieldsTopLevel(provider),
+                perEventFields = LogFieldsPerEvent(provider),
+                scope = backgroundScope,
+            )
+
+        repeat(3) { telemetry.emit(LogRecord(LogSeverity.ERROR, "a$it", mapOf("k" to "y".repeat(20_000)))) }
+        // Bodies are not truncated by the encoder, so this record is over the cap on its own
+        // and is rejected 403 however it is split.
+        telemetry.emit(LogRecord(LogSeverity.ERROR, "huge" + "B".repeat(200_000), emptyMap()))
+        repeat(4) { telemetry.emit(LogRecord(LogSeverity.ERROR, "b$it", mapOf("k" to "y".repeat(20_000)))) }
+        telemetry.forceFlush()
+
+        val delivered =
+            waf.sent.filter { it.body.size <= 65_536 }.flatMap { req ->
+                parseProto(req.body).message(1).message(2).all(2).map {
+                    parseProto(it.bytes()).message(5).string(1)
+                }
+            }
+        // The rejected chunk sits in the middle, so stopping on it would silently drop b0..b3,
+        // the same loss this fix removes.
+        assertEquals((0 until 3).map { "a$it" } + (0 until 4).map { "b$it" }, delivered)
+    }
+
+    /** 403s anything over the WAF body cap, like the edge does, and accepts everything else. */
+    private class WafBoundedSender : ILogHttpSender {
+        val sent = mutableListOf<LogHttpRequest>()
+
+        override suspend fun send(request: LogHttpRequest): LogHttpResponse {
+            sent.add(request)
+            val overCap = request.body.size > 65_536
+            return LogHttpResponse(success = !overCap, statusCode = if (overCap) 403 else 200)
+        }
+    }
+
+    @Test
     fun exportEncodedPostsRawBytes() = runTest {
         val provider = FakePlatformProvider()
         val http = FakeHttpSender()

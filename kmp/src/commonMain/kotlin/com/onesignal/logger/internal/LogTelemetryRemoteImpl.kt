@@ -109,7 +109,10 @@ internal class LogTelemetryRemoteImpl(
     private suspend fun exportBatch(records: List<EncodableRecord>) {
         val payloads = OtlpLogEncoder.encodeChunked(getResourceAttributes(), records, MAX_PAYLOAD_BYTES)
         for (payload in payloads) {
-            retrier.execute(abortSignal = shutdownSignal) { attemptPost(payload) }
+            // Giving up while still retryable means the connection is down, not this chunk, so
+            // the siblings would each burn a full retry cycle to fail the same way. A PERMANENT
+            // reject is chunk-specific (an over-cap lone record) and must not take them with it.
+            if (retrier.execute(abortSignal = shutdownSignal) { attemptPost(payload) } == ExportAttempt.RETRYABLE) break
         }
     }
 

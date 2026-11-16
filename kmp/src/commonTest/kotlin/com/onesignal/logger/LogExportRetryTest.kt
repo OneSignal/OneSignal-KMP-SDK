@@ -186,7 +186,7 @@ class LogExportRetryTest {
         // is what stops a "return early instead of clamping" regression from passing.
         var attempts = 0
         val attemptTimes = mutableListOf<Long>()
-        val succeeded =
+        val outcome =
             ExportRetrier(
                 policy = RetryPolicy(maxAttempts = 10, maxTotalBackoffMillis = 3_000L),
                 nextRandom = { 0.5 },
@@ -196,7 +196,7 @@ class LogExportRetryTest {
                 ExportAttempt.RETRYABLE
             }
 
-        assertFalse(succeeded)
+        assertEquals(ExportAttempt.RETRYABLE, outcome)
         assertEquals(4, attempts)
         assertEquals(listOf(1_000L, 1_600L, 400L), attemptTimes.zipWithNext { a, b -> b - a })
     }
@@ -251,15 +251,45 @@ class LogExportRetryTest {
         val abort = CompletableDeferred(Unit)
         var attempts = 0
 
-        val succeeded =
+        val outcome =
             ExportRetrier(policy = RetryPolicy(), nextRandom = { 0.5 })
                 .execute(abortSignal = abort) {
                     attempts++
                     ExportAttempt.SUCCESS
                 }
 
-        assertTrue(succeeded)
+        assertEquals(ExportAttempt.SUCCESS, outcome)
         assertEquals(1, attempts)
+    }
+
+    // execute() reports which kind of failure ended the export, not just that one did.
+    // exportBatch keys the stop-the-siblings decision on exactly this split.
+
+    @Test
+    fun givingUpWhileStillRetryableReportsRetryable() = runTest {
+        val outcome =
+            ExportRetrier(policy = RetryPolicy(maxAttempts = 2), nextRandom = { 0.5 })
+                .execute { ExportAttempt.RETRYABLE }
+
+        assertEquals(ExportAttempt.RETRYABLE, outcome)
+    }
+
+    @Test
+    fun anAbortedExportReportsRetryableRatherThanPermanent() = runTest {
+        val outcome =
+            ExportRetrier(policy = RetryPolicy(), nextRandom = { 0.5 })
+                .execute(abortSignal = CompletableDeferred(Unit)) { ExportAttempt.RETRYABLE }
+
+        assertEquals(ExportAttempt.RETRYABLE, outcome)
+    }
+
+    @Test
+    fun aRejectedRequestReportsPermanent() = runTest {
+        val outcome =
+            ExportRetrier(policy = RetryPolicy(), nextRandom = { 0.5 })
+                .execute { ExportAttempt.PERMANENT }
+
+        assertEquals(ExportAttempt.PERMANENT, outcome)
     }
 
     @Test
