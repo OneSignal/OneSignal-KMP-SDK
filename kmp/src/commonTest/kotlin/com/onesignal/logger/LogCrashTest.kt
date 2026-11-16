@@ -8,6 +8,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class LogCrashTest {
@@ -45,7 +46,8 @@ class LogCrashTest {
         val attrKeys = record.all(6).map { parseProto(it.bytes()).string(1) }
         assertTrue("exception.type" in attrKeys)
         assertTrue("exception.message" in attrKeys)
-        assertTrue("ossdk.exception.thread.name" in attrKeys)
+        assertTrue("thread.name" in attrKeys)
+        assertFalse("ossdk.exception.thread.name" in attrKeys)
         val resourceAttrKeys =
             parseProto(store.entries[0].bytes).message(1).message(1).all(1).map { parseProto(it.bytes()).string(1) }
         assertTrue("service.name" in resourceAttrKeys)
@@ -65,7 +67,59 @@ class LogCrashTest {
         val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
         // severity_number (2) == FATAL (21)
         assertEquals(21L, record.first(2).varint)
-        assertEquals(1L, fatalFlag(record))
+        assertEquals(1L, boolAttribute(record, "ossdk.crash.fatal"))
+    }
+
+    @Test
+    fun crashRecordThreadNameIsTheFaultingThreadNotTheEmittingThread() = runTest {
+        // The ANR path emits from the watchdog while main is the faulting thread; the
+        // record's thread.name has to win over the per-event emitting thread.
+        val provider = FakePlatformProvider(currentThreadName = "OneSignal-Log-ANR-Watchdog")
+        val store = FakeFileStore()
+        val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(provider, store)
+        val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
+
+        reporter.saveCrash(
+            CrashData(threadName = "main", exceptionType = "Anr", exceptionMessage = "blocked", stacktrace = "s"),
+        )
+
+        val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
+        val threadNames =
+            record.all(6)
+                .map { parseProto(it.bytes()) }
+                .filter { it.string(1) == "thread.name" }
+                .map { it.message(2).string(1) }
+        assertEquals(listOf("main"), threadNames)
+    }
+
+    @Test
+    fun saveCrashMarksTheExceptionEscaped() = runTest {
+        val provider = FakePlatformProvider()
+        val store = FakeFileStore()
+        val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(provider, store)
+        val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
+
+        reporter.saveCrash(
+            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s"),
+        )
+
+        val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
+        assertEquals(1L, boolAttribute(record, "exception.escaped"))
+    }
+
+    @Test
+    fun saveNonFatalMarksTheExceptionNotEscaped() = runTest {
+        val provider = FakePlatformProvider()
+        val store = FakeFileStore()
+        val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(provider, store)
+        val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
+
+        reporter.saveNonFatal(
+            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s"),
+        )
+
+        val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
+        assertEquals(0L, boolAttribute(record, "exception.escaped"))
     }
 
     @Test
@@ -82,14 +136,14 @@ class LogCrashTest {
         val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
         // severity_number (2) == WARN (13)
         assertEquals(13L, record.first(2).varint)
-        assertEquals(0L, fatalFlag(record))
+        assertEquals(0L, boolAttribute(record, "ossdk.crash.fatal"))
     }
 
-    // Reads the ossdk.crash.fatal AnyValue.bool_value (0/1) from an encoded LogRecord message.
-    private fun fatalFlag(record: ProtoMessage): Long =
+    // Reads an AnyValue.bool_value (0/1) attribute from an encoded LogRecord message.
+    private fun boolAttribute(record: ProtoMessage, key: String): Long =
         record.all(6)
             .map { parseProto(it.bytes()) }
-            .single { it.string(1) == "ossdk.crash.fatal" }
+            .single { it.string(1) == key }
             .message(2)
             .first(2)
             .varint

@@ -43,15 +43,20 @@ internal class LogCrashReporter(
                     "exception.message" to crash.exceptionMessage,
                     "exception.stacktrace" to crash.stacktrace,
                     "exception.type" to crash.exceptionType,
-                    // Matches the top-level thread.name today, but kept distinct in
-                    // case future refactors report from a different thread.
-                    "ossdk.exception.thread.name" to crash.threadName,
+                    // Overrides the per-event emitting thread: thread.name must name the thread
+                    // the record is about. For an ANR those differ (watchdog emits, main faults).
+                    THREAD_NAME to crash.threadName,
                 ),
                 // Explicit, SDK-owned fatal flag emitted as a typed OTLP bool. The backend can
                 // segment crash/ANR metrics on this stable attribute rather than inferring intent
                 // from severity or exception.type alone, so a non-fatal record can never be
                 // double-counted as a crash even if a mapping changes.
-                boolAttributes = mapOf(OSSDK_CRASH_FATAL to fatal),
+                boolAttributes =
+                mapOf(
+                    OSSDK_CRASH_FATAL to fatal,
+                    // Only a fatal report escaped its scope; a non-fatal one was observed and survived.
+                    EXCEPTION_ESCAPED to fatal,
+                ),
             )
 
         try {
@@ -68,5 +73,7 @@ internal class LogCrashReporter(
 
     private companion object {
         const val OSSDK_CRASH_FATAL = "ossdk.crash.fatal"
+        const val EXCEPTION_ESCAPED = "exception.escaped"
+        const val THREAD_NAME = "thread.name"
     }
 }

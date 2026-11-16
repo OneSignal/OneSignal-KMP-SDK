@@ -17,8 +17,6 @@ object LogLoggingHelper {
     ) {
         val attributes =
             buildMap {
-                put("log.message", message)
-                put("log.level", level)
                 if (exceptionType != null) put("exception.type", exceptionType)
                 if (exceptionMessage != null) put("exception.message", exceptionMessage)
                 if (exceptionStacktrace != null) put("exception.stacktrace", exceptionStacktrace)

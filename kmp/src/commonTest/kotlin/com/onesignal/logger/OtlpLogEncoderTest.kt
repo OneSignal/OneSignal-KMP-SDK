@@ -17,7 +17,7 @@ class OtlpLogEncoderTest {
                     EncodableRecord(
                         severity = LogSeverity.ERROR,
                         body = "boom",
-                        attributes = mapOf("log.level" to "ERROR", "log.message" to "boom"),
+                        attributes = mapOf("thread.name" to "main", "app.state" to "foreground"),
                         timeUnixNanos = 1700000000000000000L,
                     ),
                 ),
@@ -49,11 +49,11 @@ class OtlpLogEncoderTest {
         assertEquals("ERROR", record.string(3))
         // body (5) -> AnyValue.string_value (1)
         assertEquals("boom", record.message(5).string(1))
-        // attributes (6) repeated, sorted: log.level then log.message
+        // attributes (6) repeated, sorted: app.state then thread.name
         val recordAttrs = record.all(6).map { parseProto(it.bytes()) }
-        assertEquals("log.level", recordAttrs[0].string(1))
-        assertEquals("log.message", recordAttrs[1].string(1))
-        assertEquals("boom", recordAttrs[1].message(2).string(1))
+        assertEquals("app.state", recordAttrs[0].string(1))
+        assertEquals("thread.name", recordAttrs[1].string(1))
+        assertEquals("main", recordAttrs[1].message(2).string(1))
     }
 
     @Test
