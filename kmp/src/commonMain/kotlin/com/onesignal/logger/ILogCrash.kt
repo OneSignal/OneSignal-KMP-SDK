@@ -13,7 +13,7 @@ interface ILogCrashReporter {
     /**
      * Records a fatal, crash-class event on the retained, disk-buffered crash telemetry
      * (`Severity.FATAL`, tagged `ossdk.crash.fatal = true`). Use for real crashes and
-     * foreground ANRs.
+     * foreground ANRs. Also tagged `ossdk.crash.attributed` from [CrashData.attributed].
      */
     @Throws(Exception::class)
     fun saveCrash(crash: CrashData)
@@ -23,6 +23,7 @@ interface ILogCrashReporter {
      * `Severity.WARN` and tagged `ossdk.crash.fatal = false`, so it stays out of any
      * severity-based crash/ANR metric while remaining queryable. Use for backgrounded
      * main-thread blocks and other retained warnings that are not user-visible crashes.
+     * Also tagged `ossdk.crash.attributed` from [CrashData.attributed].
      */
     @Throws(Exception::class)
     fun saveNonFatal(crash: CrashData)

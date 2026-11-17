@@ -33,7 +33,7 @@ internal class LogCrashReporter(
         fatal: Boolean,
     ) {
         val label = if (fatal) "crash report" else "non-fatal report"
-        logger.info("LogCrashReporter: saving $label for ${crash.exceptionType}")
+        logger.info("LogCrashReporter: saving $label for ${crash.exceptionType} (attributed=${crash.attributed})")
 
         val body = crash.exceptionMessage.ifBlank { crash.exceptionType }
         val record =

@@ -3,6 +3,7 @@ package com.onesignal.logger
 import com.onesignal.logger.attributes.LogFieldsPerEvent
 import com.onesignal.logger.attributes.LogFieldsTopLevel
 import com.onesignal.logger.internal.LogTelemetryRemoteImpl
+import com.onesignal.logger.otlp.OtlpLogEncoder
 import kotlinx.coroutines.test.runTest
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
@@ -37,6 +38,7 @@ class LogCrashTest {
                 exceptionType = "java.lang.NullPointerException",
                 exceptionMessage = "npe message",
                 stacktrace = "stack...",
+                attributed = true,
             ),
         )
 
@@ -61,7 +63,7 @@ class LogCrashTest {
         val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
 
         reporter.saveCrash(
-            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s"),
+            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s", attributed = true),
         )
 
         val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
@@ -80,7 +82,7 @@ class LogCrashTest {
         val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
 
         reporter.saveCrash(
-            CrashData(threadName = "main", exceptionType = "Anr", exceptionMessage = "blocked", stacktrace = "s"),
+            CrashData(threadName = "main", exceptionType = "Anr", exceptionMessage = "blocked", stacktrace = "s", attributed = true),
         )
 
         val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
@@ -97,7 +99,7 @@ class LogCrashTest {
         val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
 
         reporter.saveCrash(
-            CrashData(threadName = "", exceptionType = "E", exceptionMessage = "m", stacktrace = "s"),
+            CrashData(threadName = "", exceptionType = "E", exceptionMessage = "m", stacktrace = "s", attributed = true),
         )
 
         val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
@@ -112,7 +114,7 @@ class LogCrashTest {
         val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
 
         reporter.saveNonFatal(
-            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s"),
+            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s", attributed = true),
         )
 
         val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
@@ -127,7 +129,7 @@ class LogCrashTest {
         val store = FakeFileStore()
         val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(provider, store)
         val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
-        val crash = CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s")
+        val crash = CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s", attributed = true)
 
         reporter.saveCrash(crash.copy(attributed = false))
         reporter.saveCrash(crash)
@@ -138,6 +140,35 @@ class LogCrashTest {
         assertEquals(1L, boolFlag(logRecord(store, 1), "ossdk.crash.attributed"))
         assertEquals(0L, boolFlag(logRecord(store, 2), "ossdk.crash.attributed"))
         assertEquals(1L, boolFlag(logRecord(store, 3), "ossdk.crash.attributed"))
+    }
+
+    @Test
+    fun attributionSurvivesTrimmingOnAnOversizedCrash() = runTest {
+        // A real crash is mostly stacktrace, so it is the case that gets trimmed. The flag is
+        // worthless if it drops out of exactly those records.
+        val provider = FakePlatformProvider()
+        val store = FakeFileStore()
+        val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(provider, store)
+        val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
+
+        reporter.saveCrash(
+            CrashData(
+                threadName = "main",
+                exceptionType = "java.lang.OutOfMemoryError",
+                exceptionMessage = "m".repeat(50_000),
+                stacktrace = "\tat com.onesignal.Frame.method(Frame.kt:1)\n".repeat(5_000),
+                attributed = false,
+            ),
+        )
+
+        // Input is ~265 KB, so the trim definitely ran; the lower bound proves it fitted the
+        // record rather than gutting it, which would make the flag assertions vacuous.
+        val payload = store.entries[0].bytes
+        assertTrue(payload.size <= OtlpLogEncoder.MAX_PAYLOAD_BYTES, "payload over cap: ${payload.size}")
+        assertTrue(payload.size > OtlpLogEncoder.MAX_PAYLOAD_BYTES / 2, "record was gutted: ${payload.size}")
+        val record = logRecord(store, 0)
+        assertEquals(0L, boolFlag(record, "ossdk.crash.attributed"))
+        assertEquals(1L, boolFlag(record, "ossdk.crash.fatal"))
     }
 
     // Reads every AnyValue.string_value stored under [key] on an encoded LogRecord message.
