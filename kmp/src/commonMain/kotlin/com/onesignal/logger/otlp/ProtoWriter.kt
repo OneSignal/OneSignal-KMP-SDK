@@ -15,6 +15,9 @@ internal class ProtoWriter {
     private var buffer = ByteArray(INITIAL_CAPACITY)
     private var position = 0
 
+    /** Bytes written so far, for callers encoding under a byte budget. */
+    val size: Int get() = position
+
     private fun ensureCapacity(extra: Int) {
         if (position + extra <= buffer.size) return
         var newSize = buffer.size * 2

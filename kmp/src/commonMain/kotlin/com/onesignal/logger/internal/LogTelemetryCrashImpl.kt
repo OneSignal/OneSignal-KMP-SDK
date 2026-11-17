@@ -38,7 +38,9 @@ internal class LogTelemetryCrashImpl(
                 timeUnixNanos = record.timestampNanos ?: epochNanosNow(),
                 boolAttributes = record.boolAttributes,
             )
-        val bytes = OtlpLogEncoder.encode(resourceAttributes, listOf(encodable))
+        // Bounded at capture time: the uploader posts these bytes verbatim, one record per
+        // request, so there is no later point at which an over-cap record could be split.
+        val bytes = OtlpLogEncoder.encodeBounded(resourceAttributes, encodable, OtlpLogEncoder.MAX_PAYLOAD_BYTES)
         if (!fileStore.save(bytes)) {
             throw IllegalStateException("ILogFileStore.save returned false")
         }

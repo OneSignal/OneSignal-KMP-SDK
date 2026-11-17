@@ -96,25 +96,25 @@ class LogTelemetryTest {
     @Test
     fun aPermanentlyRejectedChunkDoesNotStopItsSiblings() = runTest {
         val provider = FakePlatformProvider()
-        val waf = WafBoundedSender()
+        val edge = RejectingSender(rejectMarker = "rejected-record")
         val telemetry =
             LogTelemetryRemoteImpl(
                 platformProvider = provider,
-                httpSender = waf,
+                httpSender = edge,
                 topLevelFields = LogFieldsTopLevel(provider),
                 perEventFields = LogFieldsPerEvent(provider),
                 scope = backgroundScope,
             )
 
-        repeat(3) { telemetry.emit(LogRecord(LogSeverity.ERROR, "a$it", mapOf("k" to "y".repeat(20_000)))) }
-        // Bodies are not truncated by the encoder, so this record is over the cap on its own
-        // and is rejected 403 however it is split.
-        telemetry.emit(LogRecord(LogSeverity.ERROR, "huge" + "B".repeat(200_000), emptyMap()))
-        repeat(4) { telemetry.emit(LogRecord(LogSeverity.ERROR, "b$it", mapOf("k" to "y".repeat(20_000)))) }
+        // ~60 KB each, so every record is bisected into a chunk of its own and the 403 lands
+        // on the marker record alone.
+        repeat(3) { telemetry.emit(LogRecord(LogSeverity.ERROR, "a$it", bulkyAttributes())) }
+        telemetry.emit(LogRecord(LogSeverity.ERROR, "rejected-record", bulkyAttributes()))
+        repeat(4) { telemetry.emit(LogRecord(LogSeverity.ERROR, "b$it", bulkyAttributes())) }
         telemetry.forceFlush()
 
         val delivered =
-            waf.sent.filter { it.body.size <= 65_536 }.flatMap { req ->
+            edge.sent.filterNot { it.body.decodeToString().contains("rejected-record") }.flatMap { req ->
                 parseProto(req.body).message(1).message(2).all(2).map {
                     parseProto(it.bytes()).message(5).string(1)
                 }
@@ -124,14 +124,16 @@ class LogTelemetryTest {
         assertEquals((0 until 3).map { "a$it" } + (0 until 4).map { "b$it" }, delivered)
     }
 
-    /** 403s anything over the WAF body cap, like the edge does, and accepts everything else. */
-    private class WafBoundedSender : ILogHttpSender {
+    private fun bulkyAttributes() = (0 until 3).associate { "k$it" to "y".repeat(20_000) }
+
+    /** 403s any payload carrying [rejectMarker], the way an edge rule rejects one request. */
+    private class RejectingSender(private val rejectMarker: String) : ILogHttpSender {
         val sent = mutableListOf<LogHttpRequest>()
 
         override suspend fun send(request: LogHttpRequest): LogHttpResponse {
             sent.add(request)
-            val overCap = request.body.size > 65_536
-            return LogHttpResponse(success = !overCap, statusCode = if (overCap) 403 else 200)
+            val rejected = request.body.decodeToString().contains(rejectMarker)
+            return LogHttpResponse(success = !rejected, statusCode = if (rejected) 403 else 200)
         }
     }
 
@@ -174,6 +176,32 @@ class LogTelemetryTest {
             parseProto(store.entries[0].bytes).message(1).message(1).all(1).map { parseProto(it.bytes()).string(1) }
         assertTrue(resourceAttrKeys.contains("ossdk.install_id"))
         assertTrue(resourceAttrKeys.contains("service.name"))
+    }
+
+    @Test
+    fun crashTelemetryBoundsAnOversizedRecordBeforeStoringIt() = runTest {
+        val provider = FakePlatformProvider()
+        val store = FakeFileStore()
+        val telemetry =
+            LogTelemetryCrashImpl(store, LogFieldsTopLevel(provider), LogFieldsPerEvent(provider))
+
+        // The uploader posts these bytes verbatim, one record per request, so an over-cap record
+        // is 403'd and lost with nothing downstream able to split it.
+        telemetry.emit(
+            LogRecord(
+                LogSeverity.FATAL,
+                "字".repeat(50_000),
+                mapOf(
+                    "exception.message" to "字".repeat(50_000),
+                    "exception.stacktrace" to "字".repeat(50_000),
+                ),
+            ),
+        )
+
+        val stored = store.entries[0].bytes
+        assertTrue(stored.size <= 65_536, "stored ${stored.size} B, over the cap")
+        val record = parseProto(stored).message(1).message(2).message(2)
+        assertTrue(record.all(6).any { parseProto(it.bytes()).string(1) == "exception.stacktrace" })
     }
 
     @Test

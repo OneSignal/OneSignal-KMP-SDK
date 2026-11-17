@@ -231,17 +231,132 @@ class OtlpLogEncoderTest {
     }
 
     @Test
-    fun encodeChunkedEmitsSingleOversizedRecordRatherThanDroppingIt() {
-        // One record cannot be split further, and is lost either way. Posting it keeps the loss
-        // visible in the ingestion service's reject metrics instead of vanishing on-device.
+    fun encodeChunkedTrimsSingleOversizedRecordUnderTheCap() {
+        // A batch of one cannot be bisected, so the record itself is trimmed. Posting it whole
+        // means a 403 at the WAF and silent loss of the record.
         val record = bulkyRecord("huge", valueLength = 32_000)
 
         val payloads = OtlpLogEncoder.encodeChunked(RESOURCE_ATTRS, listOf(record), maxPayloadBytes = 1_024)
 
         assertEquals(1, payloads.size)
-        assertTrue(payloads.single().size > 1_024)
+        assertTrue(payloads.single().size <= 1_024, "payload of ${payloads.single().size} B exceeds the cap")
         assertEquals(listOf("huge"), bodiesIn(payloads.single()))
     }
+
+    @Test
+    fun truncatesAttributeValuesByBytesNotCharacters() {
+        // The character-based limit let a 32,000-character CJK stacktrace reach 96,000 bytes,
+        // over the whole-request cap on its own.
+        val cjk = "字".repeat(32_000)
+
+        val attr = soleAttributeOf(recordWith(attributes = mapOf("exception.stacktrace" to cjk)))
+
+        val value = attr.message(2).string(1)
+        assertTrue(value.encodeToByteArray().size <= 32_000, "value is ${value.encodeToByteArray().size} B")
+        // Cut on a character boundary, not mid-character: 3 bytes per CJK character.
+        assertEquals(32_000 / 3, value.length)
+    }
+
+    @Test
+    fun neverSplitsASurrogatePair() {
+        // The leading "a" puts the 32,000-byte boundary inside a 4-byte pair: 1 + 4 * 7_999 is
+        // 31,997, and one more pair overshoots. Half a pair on the wire is invalid UTF-8.
+        val emoji = "\uD83D\uDCA5"
+
+        val attr = soleAttributeOf(recordWith(attributes = mapOf("exception.message" to "a" + emoji.repeat(10_000))))
+
+        assertEquals("a" + emoji.repeat(7_999), attr.message(2).string(1))
+    }
+
+    @Test
+    fun truncatesOversizedBody() {
+        // The body was never truncated; a 200,000-character one is three times the request cap.
+        val record = recordWith(body = "x".repeat(200_000), attributes = emptyMap())
+
+        assertEquals(32_000, record.message(5).string(1).length)
+    }
+
+    @Test
+    fun keepsSmallAttributesWhenTrimmingALoneOversizedRecord() {
+        // A crash from a CJK market: message in the body and the attribute, plus a stacktrace,
+        // each inside the per-value limit and together well over the request cap.
+        val record =
+            EncodableRecord(
+                severity = LogSeverity.FATAL,
+                body = "字".repeat(20_000),
+                attributes =
+                mapOf(
+                    "exception.message" to "字".repeat(20_000),
+                    "exception.stacktrace" to "字".repeat(20_000),
+                    "exception.type" to "java.lang.IllegalStateException",
+                    "log.record.uid" to "a-b-c",
+                    "ossdk.app_id" to "app",
+                    "thread.name" to "main",
+                ),
+                timeUnixNanos = 1L,
+                boolAttributes = mapOf("ossdk.crash.fatal" to true),
+            )
+
+        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, record, OtlpLogEncoder.MAX_PAYLOAD_BYTES)
+
+        assertTrue(payload.size <= OtlpLogEncoder.MAX_PAYLOAD_BYTES, "payload is ${payload.size} B")
+        val logRecord = parseProto(payload).message(1).message(2).message(2)
+        val attributes = logRecord.all(6).map { parseProto(it.bytes()) }.associate { it.string(1) to it.message(2) }
+        // Nothing is dropped: the trim comes out of the two bulky values, which share what is left.
+        assertEquals(
+            setOf(
+                "exception.message", "exception.stacktrace", "exception.type",
+                "log.record.uid", "ossdk.app_id", "ossdk.crash.fatal", "thread.name",
+            ),
+            attributes.keys,
+        )
+        assertEquals("main", attributes.getValue("thread.name").string(1))
+        assertEquals(1L, attributes.getValue("ossdk.crash.fatal").first(2).varint)
+        val stacktraceBytes = attributes.getValue("exception.stacktrace").string(1).encodeToByteArray().size
+        val messageBytes = attributes.getValue("exception.message").string(1).encodeToByteArray().size
+        assertTrue(stacktraceBytes > 10_000, "the stacktrace kept only $stacktraceBytes B")
+        assertTrue(messageBytes > 10_000, "the message kept only $messageBytes B")
+    }
+
+    @Test
+    fun reportsDroppedAttributeCount() {
+        // Attribute loss was silent; OTLP has a field for it.
+        val manyAttrs = (0 until 200).associate { "k${it.toString().padStart(3, '0')}" to "v$it" }
+
+        val record = recordWith(attributes = manyAttrs)
+
+        assertEquals(128, record.all(6).size)
+        assertEquals(72L, record.first(7).varint)
+    }
+
+    @Test
+    fun omitsDroppedAttributeCountWhenNothingIsDropped() {
+        val record = recordWith(attributes = mapOf("exception.type" to "E"))
+
+        assertTrue(record.all(7).isEmpty())
+    }
+
+    private fun recordWith(
+        body: String = "boom",
+        attributes: Map<String, String>,
+    ): ProtoMessage {
+        val bytes =
+            OtlpLogEncoder.encode(
+                resourceAttributes = emptyMap(),
+                records =
+                listOf(
+                    EncodableRecord(
+                        severity = LogSeverity.ERROR,
+                        body = body,
+                        attributes = attributes,
+                        timeUnixNanos = 1L,
+                    ),
+                ),
+            )
+        return parseProto(bytes).message(1).message(2).message(2)
+    }
+
+    private fun soleAttributeOf(record: ProtoMessage): ProtoMessage = parseProto(record.all(6).single().bytes())
 
     private fun bulkyRecord(body: String, valueLength: Int) =
         EncodableRecord(
