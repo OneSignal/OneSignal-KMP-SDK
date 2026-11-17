@@ -193,7 +193,7 @@ class LogTelemetryTest {
                 "字".repeat(50_000),
                 mapOf(
                     "exception.message" to "字".repeat(50_000),
-                    "exception.stacktrace" to "字".repeat(50_000),
+                    "exception.stacktrace" to "java.lang.IllegalStateException\n" + "\tat com.onesignal.A.b(A.kt:1)\n".repeat(3_000),
                 ),
             ),
         )

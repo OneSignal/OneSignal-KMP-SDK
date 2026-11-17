@@ -109,20 +109,22 @@ internal object OtlpLogEncoder {
     fun encode(
         resourceAttributes: Map<String, String>,
         records: List<EncodableRecord>,
-    ): ByteArray = encode(resourceAttributes, records, UNBOUNDED)
+    ): ByteArray = encodePayload(encodeResource(resourceAttributes), records.map { encodeLogRecord(it, UNBOUNDED) })
 
     /**
-     * Encodes one record into a payload of at most [maxPayloadBytes], for the crash upload path,
-     * which posts a stored record on its own and so can never rely on chunking to get under the cap.
+     * Encodes one record for the crash upload path, which posts a stored record on its own and so
+     * can never rely on chunking. Exceeds [maxPayloadBytes] only when the resource attributes do.
      */
     fun encodeBounded(
         resourceAttributes: Map<String, String>,
         record: EncodableRecord,
         maxPayloadBytes: Int,
     ): ByteArray {
-        val payload = encode(resourceAttributes, listOf(record))
+        val resource = encodeResource(resourceAttributes)
+        val encoded = encodeLogRecord(record, UNBOUNDED)
+        val payload = encodePayload(resource, listOf(encoded))
         if (payload.size <= maxPayloadBytes) return payload
-        return trimToFit(resourceAttributes, record, payload, maxPayloadBytes)
+        return trimToFit(resource, record, encoded, payload, maxPayloadBytes)
     }
 
     /** Splits into payloads of at most [maxPayloadBytes]. */
@@ -132,54 +134,63 @@ internal object OtlpLogEncoder {
         maxPayloadBytes: Int,
     ): List<ByteArray> {
         if (records.isEmpty()) return emptyList()
-        return buildList { appendChunks(resourceAttributes, records, maxPayloadBytes) }
+        val resource = encodeResource(resourceAttributes)
+        val encoded = records.map { encodeLogRecord(it, UNBOUNDED) }
+        return buildList { appendChunks(resource, records, encoded, maxPayloadBytes) }
     }
 
+    /**
+     * Carries the encoded records down the bisection so each one is encoded once for the whole
+     * split, rather than re-encoded at every level of the recursion.
+     */
     private fun MutableList<ByteArray>.appendChunks(
-        resourceAttributes: Map<String, String>,
+        resource: ByteArray,
         records: List<EncodableRecord>,
+        encoded: List<ByteArray>,
         maxPayloadBytes: Int,
     ) {
-        val payload = encode(resourceAttributes, records)
+        val payload = encodePayload(resource, encoded)
         if (payload.size <= maxPayloadBytes) {
             add(payload)
             return
         }
         if (records.size == 1) {
-            add(trimToFit(resourceAttributes, records.single(), payload, maxPayloadBytes))
+            add(trimToFit(resource, records.single(), encoded.single(), payload, maxPayloadBytes))
             return
         }
         val mid = records.size / 2
-        appendChunks(resourceAttributes, records.subList(0, mid), maxPayloadBytes)
-        appendChunks(resourceAttributes, records.subList(mid, records.size), maxPayloadBytes)
+        appendChunks(resource, records.subList(0, mid), encoded.subList(0, mid), maxPayloadBytes)
+        appendChunks(resource, records.subList(mid, records.size), encoded.subList(mid, records.size), maxPayloadBytes)
     }
 
     /**
-     * Re-encodes a record that cannot be split under a budget taken from the measured overshoot,
-     * rather than a fixed constant, so whatever the resource attributes and framing cost on this
-     * device is already accounted for.
+     * Budget from the measured overshoot rather than a constant, so this device's resource and
+     * framing cost is already priced in. Takes [encoded] so the trim costs one more encode, not two.
      */
     private fun trimToFit(
-        resourceAttributes: Map<String, String>,
+        resource: ByteArray,
         record: EncodableRecord,
+        encoded: ByteArray,
         payload: ByteArray,
         maxPayloadBytes: Int,
     ): ByteArray {
-        val budget = encodeLogRecord(record, UNBOUNDED).size - (payload.size - maxPayloadBytes)
+        val budget = encoded.size - (payload.size - maxPayloadBytes)
         // The resource attributes alone are over the cap; emptying the record would not save it.
         if (budget <= 0) return payload
-        return encode(resourceAttributes, listOf(record), budget)
+        return encodePayload(resource, listOf(encodeLogRecord(record, budget)))
     }
 
-    private fun encode(
-        resourceAttributes: Map<String, String>,
-        records: List<EncodableRecord>,
-        maxRecordBytes: Int,
-    ): ByteArray {
+    private fun encodePayload(resource: ByteArray, records: List<ByteArray>): ByteArray {
+        val scopeLogs =
+            ProtoWriter().apply {
+                writeLengthDelimited(FIELD_SL_SCOPE, encodeScope())
+                for (record in records) writeLengthDelimited(FIELD_SL_LOG_RECORDS, record)
+            }.toByteArray()
+
         val resourceLogs =
             ProtoWriter().apply {
-                writeLengthDelimited(FIELD_RL_RESOURCE, encodeResource(resourceAttributes))
-                writeLengthDelimited(FIELD_RL_SCOPE_LOGS, encodeScopeLogs(records, maxRecordBytes))
+                writeLengthDelimited(FIELD_RL_RESOURCE, resource)
+                writeLengthDelimited(FIELD_RL_SCOPE_LOGS, scopeLogs)
             }.toByteArray()
 
         return ProtoWriter().apply {
@@ -201,78 +212,65 @@ internal object OtlpLogEncoder {
         return writer.toByteArray()
     }
 
-    private fun encodeScopeLogs(records: List<EncodableRecord>, maxRecordBytes: Int): ByteArray {
-        val writer = ProtoWriter()
-        writer.writeLengthDelimited(FIELD_SL_SCOPE, encodeScope())
-        for (record in records) {
-            writer.writeLengthDelimited(FIELD_SL_LOG_RECORDS, encodeLogRecord(record, maxRecordBytes))
-        }
-        return writer.toByteArray()
-    }
-
     private fun encodeScope(): ByteArray =
         ProtoWriter().apply { writeString(FIELD_SCOPE_NAME, SCOPE_NAME) }.toByteArray()
 
     private fun encodeLogRecord(record: EncodableRecord, maxBytes: Int): ByteArray {
-        val budget = maxBytes - RECORD_TRAILER_BYTES
         val writer = ProtoWriter()
         writer.writeFixed64(FIELD_LR_TIME_UNIX_NANO, record.timeUnixNanos)
         writer.writeVarintField(FIELD_LR_SEVERITY_NUMBER, record.severity.severityNumber.toLong())
         writer.writeString(FIELD_LR_SEVERITY_TEXT, record.severity.severityText)
-        val bodyBytes = minOf(MAX_VALUE_BYTES, budget - writer.size - VALUE_FRAMING_BYTES)
-        writer.writeLengthDelimited(FIELD_LR_BODY, encodeAnyValue(record.body.elideToUtf8Bytes(bodyBytes)))
-        val dropped = writer.writeAttributes(record, budget)
+
+        val pending = record.pendingValues()
+        var dropped = record.boolAttributes.size + record.attributes.size - (pending.size - 1)
+        fitWithinBudget(pending, maxBytes - RECORD_TRAILER_BYTES - writer.size).forEachIndexed { index, encoded ->
+            if (encoded != null) writer.writeLengthDelimited(pending[index].field, encoded) else dropped++
+        }
+
         writer.writeFixed64(FIELD_LR_OBSERVED_TIME_UNIX_NANO, record.timeUnixNanos)
         if (dropped > 0) writer.writeVarintField(FIELD_LR_DROPPED_ATTRIBUTES_COUNT, dropped.toLong())
         return writer.toByteArray()
     }
 
     /**
-     * Writes the attributes that fit under the count cap and [budget], and returns how many
-     * were left out, for OTLP's dropped_attributes_count. Attribute loss is otherwise silent.
+     * The body first, then bool attrs so reserved SDK flags (e.g. ossdk.crash.fatal) survive a
+     * record near the count cap, then string attrs. Order within each group is by key.
      */
-    private fun ProtoWriter.writeAttributes(record: EncodableRecord, budget: Int): Int {
-        val pending = record.pendingAttributes()
-        var dropped = record.boolAttributes.size + record.attributes.size - pending.size
-        for (encoded in fitWithinBudget(pending, budget - size)) {
-            if (encoded == null) dropped++ else writeLengthDelimited(FIELD_LR_ATTRIBUTES, encoded)
-        }
-        return dropped
-    }
-
-    /**
-     * Bool attrs first so reserved SDK flags (e.g. ossdk.crash.fatal) are not dropped when a
-     * record is near the count cap. Order within each type is by key.
-     */
-    private fun EncodableRecord.pendingAttributes(): List<PendingAttribute> =
+    private fun EncodableRecord.pendingValues(): List<PendingValue> =
         buildList {
+            add(PendingValue(FIELD_LR_BODY, key = null, value = body, encoded = encodeBody(body)))
+            var emitted = 0
             for ((key, value) in boolAttributes.entries.sortedBy { it.key }) {
-                if (size >= MAX_ATTRIBUTE_COUNT) return@buildList
-                add(PendingAttribute(key, value = null, encoded = encodeBoolKeyValue(key, value)))
+                if (emitted++ >= MAX_ATTRIBUTE_COUNT) return@buildList
+                add(PendingValue(FIELD_LR_ATTRIBUTES, key, value = null, encoded = encodeBoolKeyValue(key, value)))
             }
             for ((key, value) in attributes.sortedEntries()) {
-                if (size >= MAX_ATTRIBUTE_COUNT) return@buildList
+                if (emitted++ >= MAX_ATTRIBUTE_COUNT) return@buildList
                 // Holds the original, not the capped copy: a re-trim re-elides from the full value,
                 // so a value cut twice still carries exactly one marker.
-                add(PendingAttribute(key, value, encodeKeyValue(key, value.elideToUtf8Bytes(MAX_VALUE_BYTES))))
+                add(PendingValue(FIELD_LR_ATTRIBUTES, key, value, encodeKeyValue(key, value.elideToUtf8Bytes(MAX_VALUE_BYTES))))
             }
         }
 
     /**
-     * Gives each attribute an equal share of the space left, smallest first, so the slack the
-     * small ones leave passes to the large ones. A stacktrace can neither crowd out the identity
-     * attributes a record needs to be groupable nor take the whole budget from another big value.
+     * Equal shares, smallest first, so the slack small values leave passes to large ones. The body
+     * competes too: a crash body is the exception message, and reserving it a third of the record
+     * before anything else is weighed leaves the stacktrace a quarter.
      */
-    private fun fitWithinBudget(pending: List<PendingAttribute>, budget: Int): List<ByteArray?> {
+    private fun fitWithinBudget(pending: List<PendingValue>, budget: Int): List<ByteArray?> {
         if (pending.sumOf { fieldCost(it.encoded) } <= budget) return pending.map { it.encoded }
         val fitted = arrayOfNulls<ByteArray>(pending.size)
+        // An attribute repeating the body verbatim (a crash record's exception.message) is
+        // recoverable from it, so it drops instead of taking a share off everything else.
+        val body = pending.first().value
+        val contending = pending.indices.filter { it == 0 || pending[it].value != body }
         var remaining = budget
-        var unallocated = pending.size
-        for (index in pending.indices.sortedBy { fieldCost(pending[it].encoded) }) {
-            val attribute = pending[index]
-            val cost = fieldCost(attribute.encoded)
+        var unallocated = contending.size
+        for (index in contending.sortedBy { fieldCost(pending[it].encoded) }) {
+            val entry = pending[index]
+            val cost = fieldCost(entry.encoded)
             val share = remaining / unallocated
-            fitted[index] = if (cost <= share) attribute.encoded else attribute.truncatedTo(share)
+            fitted[index] = if (cost <= share) entry.encoded else entry.truncatedTo(share)
             remaining -= fitted[index]?.let { fieldCost(it) } ?: 0
             unallocated--
         }
@@ -280,17 +278,23 @@ internal object OtlpLogEncoder {
     }
 
     /** A bool attribute has no string value to shorten, so it is dropped rather than truncated. */
-    private fun PendingAttribute.truncatedTo(budget: Int): ByteArray? {
+    private fun PendingValue.truncatedTo(budget: Int): ByteArray? {
         if (value == null) return null
-        val allowance = minOf(MAX_VALUE_BYTES, budget - fieldCost(encodeKeyValue(key, "")) - VALUE_FRAMING_BYTES)
-        if (allowance <= 0) return null
-        val truncated = encodeKeyValue(key, value.elideToUtf8Bytes(allowance))
+        val overhead = if (key == null) 0 else fieldCost(encodeKeyValue(key, ""))
+        val allowance = minOf(MAX_VALUE_BYTES, budget - overhead - VALUE_FRAMING_BYTES)
+        // The body field is always written, even empty, so it is shortened rather than dropped.
+        if (allowance <= 0) return if (key == null) encodeAnyValue("") else null
+        val shortened = value.elideToUtf8Bytes(allowance)
+        val truncated = if (key == null) encodeAnyValue(shortened) else encodeKeyValue(key, shortened)
         return if (fieldCost(truncated) <= budget) truncated else null
     }
 
-    private class PendingAttribute(val key: String, val value: String?, val encoded: ByteArray)
+    /** A body ([key] null) is a bare AnyValue; an attribute is a KeyValue. */
+    private class PendingValue(val field: Int, val key: String?, val value: String?, val encoded: ByteArray)
 
-    /** What one attribute costs on the record: its tag, its length prefix, and its own bytes. */
+    private fun encodeBody(body: String): ByteArray = encodeAnyValue(body.elideToUtf8Bytes(MAX_VALUE_BYTES))
+
+    /** What one value costs on the record: its tag, its length prefix, and its own bytes. */
     private fun fieldCost(encoded: ByteArray): Int = 1 + varintSize(encoded.size) + encoded.size
 
     private fun varintSize(value: Int): Int {

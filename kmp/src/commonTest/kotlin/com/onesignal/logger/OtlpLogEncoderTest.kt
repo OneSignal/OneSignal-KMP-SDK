@@ -310,44 +310,93 @@ class OtlpLogEncoderTest {
 
     @Test
     fun keepsSmallAttributesWhenTrimmingALoneOversizedRecord() {
-        // A crash from a CJK market: message in the body and the attribute, plus a stacktrace,
-        // each inside the per-value limit and together well over the request cap.
-        val record =
-            EncodableRecord(
-                severity = LogSeverity.FATAL,
-                body = "字".repeat(20_000),
-                attributes =
-                mapOf(
-                    "exception.message" to "字".repeat(20_000),
-                    "exception.stacktrace" to "字".repeat(20_000),
-                    "exception.type" to "java.lang.IllegalStateException",
-                    "log.record.uid" to "a-b-c",
-                    "ossdk.app_id" to "app",
-                    "thread.name" to "main",
-                ),
-                timeUnixNanos = 1L,
-                boolAttributes = mapOf("ossdk.crash.fatal" to true),
-            )
-
-        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, record, OtlpLogEncoder.MAX_PAYLOAD_BYTES)
+        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, cjkCrashRecord(), OtlpLogEncoder.MAX_PAYLOAD_BYTES)
 
         assertTrue(payload.size <= OtlpLogEncoder.MAX_PAYLOAD_BYTES, "payload is ${payload.size} B")
         val logRecord = parseProto(payload).message(1).message(2).message(2)
         val attributes = logRecord.all(6).map { parseProto(it.bytes()) }.associate { it.string(1) to it.message(2) }
-        // Nothing is dropped: the trim comes out of the two bulky values, which share what is left.
-        assertEquals(
-            setOf(
-                "exception.message", "exception.stacktrace", "exception.type",
-                "log.record.uid", "ossdk.app_id", "ossdk.crash.fatal", "thread.name",
-            ),
-            attributes.keys,
+        assertTrue(
+            setOf("exception.type", "log.record.uid", "ossdk.app_id", "ossdk.crash.fatal", "thread.name")
+                .all { it in attributes.keys },
+            "an identity attribute was crowded out: ${attributes.keys}",
         )
         assertEquals("main", attributes.getValue("thread.name").string(1))
         assertEquals(1L, attributes.getValue("ossdk.crash.fatal").first(2).varint)
-        val stacktraceBytes = attributes.getValue("exception.stacktrace").string(1).encodeToByteArray().size
-        val messageBytes = attributes.getValue("exception.message").string(1).encodeToByteArray().size
-        assertTrue(stacktraceBytes > 10_000, "the stacktrace kept only $stacktraceBytes B")
-        assertTrue(messageBytes > 10_000, "the message kept only $messageBytes B")
+    }
+
+    @Test
+    fun theBodyCompetesForBudgetRatherThanReservingItsOwn() {
+        // Three distinct large values and no duplicate, so only the body's own allocation is in
+        // play. Reserving it 32,000 bytes before the rest were weighed left them 16,000 each.
+        val record =
+            EncodableRecord(
+                severity = LogSeverity.ERROR,
+                body = "b".repeat(50_000),
+                attributes = mapOf("first" to "f".repeat(50_000), "second" to "s".repeat(50_000)),
+                timeUnixNanos = 1L,
+            )
+
+        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, record, OtlpLogEncoder.MAX_PAYLOAD_BYTES)
+
+        val logRecord = parseProto(payload).message(1).message(2).message(2)
+        val sizes =
+            (
+                listOf(logRecord.message(5).string(1)) +
+                    logRecord.all(6).map { parseProto(it.bytes()).message(2).string(1) }
+                ).map { it.encodeToByteArray().size }
+        // An even three-way split is about 21,500 each; the body hogging its reserve shows as 32,000.
+        assertTrue(sizes.min() > 19_000, "shares are lopsided: $sizes")
+        assertTrue(sizes.max() < 24_000, "a value took ${sizes.max()} B of the record")
+    }
+
+    @Test
+    fun dropsAnAttributeThatRepeatsTheBody() {
+        // exception.message is the body verbatim on every crash record, so when the record is over
+        // budget the copy is recoverable from the body and shrinking both halves the stacktrace.
+        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, cjkCrashRecord(), OtlpLogEncoder.MAX_PAYLOAD_BYTES)
+
+        val logRecord = parseProto(payload).message(1).message(2).message(2)
+        val keys = logRecord.all(6).map { parseProto(it.bytes()).string(1) }
+        assertTrue("exception.message" !in keys, "the duplicate survived: $keys")
+        // Dropping it is only honest if the record says so.
+        assertEquals(1L, logRecord.first(7).varint)
+    }
+
+    @Test
+    fun keepsAnAttributeThatRepeatsTheBodyWhenTheRecordFits() {
+        val record =
+            EncodableRecord(
+                severity = LogSeverity.ERROR,
+                body = "boom",
+                attributes = mapOf("exception.message" to "boom"),
+                timeUnixNanos = 1L,
+            )
+
+        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, record, OtlpLogEncoder.MAX_PAYLOAD_BYTES)
+
+        val logRecord = parseProto(payload).message(1).message(2).message(2)
+        assertEquals(listOf("exception.message"), logRecord.all(6).map { parseProto(it.bytes()).string(1) })
+        assertTrue(logRecord.all(7).isEmpty())
+    }
+
+    /** Shaped like LogCrashReporter builds one: the body is the message, and the attribute repeats it. */
+    private fun cjkCrashRecord(): EncodableRecord {
+        val message = "字".repeat(20_000)
+        return EncodableRecord(
+            severity = LogSeverity.FATAL,
+            body = message,
+            attributes =
+            mapOf(
+                "exception.message" to message,
+                "exception.stacktrace" to "java.lang.IllegalStateException: $message\n" + "\tat com.onesignal.A.b(A.kt:1)\n".repeat(500),
+                "exception.type" to "java.lang.IllegalStateException",
+                "log.record.uid" to "a-b-c",
+                "ossdk.app_id" to "app",
+                "thread.name" to "main",
+            ),
+            timeUnixNanos = 1L,
+            boolAttributes = mapOf("ossdk.crash.fatal" to true),
+        )
     }
 
     @Test
