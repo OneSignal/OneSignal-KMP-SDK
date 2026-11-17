@@ -67,6 +67,11 @@ internal object OtlpLogEncoder {
     /** Upper bound on the tags and length prefixes wrapping one value, body or attribute. */
     private const val VALUE_FRAMING_BYTES = 16
 
+    // Reserved for the marker naming how much an elided value lost; the marker is always shorter.
+    // Under the floor there is no room for a head, a marker and a tail, so the head alone is kept.
+    private const val ELISION_MARKER_MAX_BYTES = 40
+    private const val MIN_ELISION_BYTES = 128
+
     // ExportLogsServiceRequest
     private const val FIELD_RESOURCE_LOGS = 1
 
@@ -215,7 +220,7 @@ internal object OtlpLogEncoder {
         writer.writeVarintField(FIELD_LR_SEVERITY_NUMBER, record.severity.severityNumber.toLong())
         writer.writeString(FIELD_LR_SEVERITY_TEXT, record.severity.severityText)
         val bodyBytes = minOf(MAX_VALUE_BYTES, budget - writer.size - VALUE_FRAMING_BYTES)
-        writer.writeLengthDelimited(FIELD_LR_BODY, encodeAnyValue(record.body.truncateToUtf8Bytes(bodyBytes)))
+        writer.writeLengthDelimited(FIELD_LR_BODY, encodeAnyValue(record.body.elideToUtf8Bytes(bodyBytes)))
         val dropped = writer.writeAttributes(record, budget)
         writer.writeFixed64(FIELD_LR_OBSERVED_TIME_UNIX_NANO, record.timeUnixNanos)
         if (dropped > 0) writer.writeVarintField(FIELD_LR_DROPPED_ATTRIBUTES_COUNT, dropped.toLong())
@@ -247,8 +252,9 @@ internal object OtlpLogEncoder {
             }
             for ((key, value) in attributes.sortedEntries()) {
                 if (size >= MAX_ATTRIBUTE_COUNT) return@buildList
-                val capped = value.truncateToUtf8Bytes(MAX_VALUE_BYTES)
-                add(PendingAttribute(key, capped, encodeKeyValue(key, capped)))
+                // Holds the original, not the capped copy: a re-trim re-elides from the full value,
+                // so a value cut twice still carries exactly one marker.
+                add(PendingAttribute(key, value, encodeKeyValue(key, value.elideToUtf8Bytes(MAX_VALUE_BYTES))))
             }
         }
 
@@ -276,9 +282,9 @@ internal object OtlpLogEncoder {
     /** A bool attribute has no string value to shorten, so it is dropped rather than truncated. */
     private fun PendingAttribute.truncatedTo(budget: Int): ByteArray? {
         if (value == null) return null
-        val allowance = budget - fieldCost(encodeKeyValue(key, "")) - VALUE_FRAMING_BYTES
+        val allowance = minOf(MAX_VALUE_BYTES, budget - fieldCost(encodeKeyValue(key, "")) - VALUE_FRAMING_BYTES)
         if (allowance <= 0) return null
-        val truncated = encodeKeyValue(key, value.truncateToUtf8Bytes(allowance))
+        val truncated = encodeKeyValue(key, value.elideToUtf8Bytes(allowance))
         return if (fieldCost(truncated) <= budget) truncated else null
     }
 
@@ -327,24 +333,66 @@ internal object OtlpLogEncoder {
     private fun Map<String, String>.sortedEntries(): List<Map.Entry<String, String>> = entries.sortedBy { it.key }
 
     /**
-     * Cuts on a code point boundary, never mid-character and never between the halves of a
-     * surrogate pair, so the truncated value is still valid UTF-8 on the wire.
+     * Keeps the head and the tail of an over-cap value. A stacktrace carries its frames at the
+     * head and its `Caused by:` root cause at the tail, and a huge first-line message pushes the
+     * frames out of the head, so cutting only the head can take the whole diagnosis with it.
      */
-    private fun String.truncateToUtf8Bytes(maxBytes: Int): String {
-        if (maxBytes <= 0) return ""
+    private fun String.elideToUtf8Bytes(maxBytes: Int): String {
+        val headEnd = prefixEndForUtf8Bytes(maxBytes)
+        if (headEnd == length) return this
+        if (maxBytes < MIN_ELISION_BYTES) return substring(0, headEnd)
+        val content = maxBytes - ELISION_MARKER_MAX_BYTES
+        val head = substring(0, prefixEndForUtf8Bytes(content * 2 / 3))
+        val tail = substring(suffixStartForUtf8Bytes(content - head.utf8Size()))
+        if (head.length + tail.length >= length) return substring(0, headEnd)
+        // Own line, so a consumer reading the stacktrace line by line sees it as one bad line
+        // rather than a corrupted frame.
+        return "$head\n[... ${utf8Size() - head.utf8Size() - tail.utf8Size()} bytes elided ...]\n$tail"
+    }
+
+    /** Index just past the longest prefix within [maxBytes], never splitting a code point. */
+    private fun String.prefixEndForUtf8Bytes(maxBytes: Int): Int {
         var bytes = 0
         var index = 0
         while (index < length) {
-            val isPair = this[index].isHighSurrogate() && index + 1 < length && this[index + 1].isLowSurrogate()
-            // An unpaired surrogate encodes to at most 3 bytes, so the 3-byte case bounds it too.
-            val charBytes = if (isPair) 4 else utf8Length(this[index])
-            if (bytes + charBytes > maxBytes) return substring(0, index)
+            val pair = isSurrogatePairAt(index)
+            val charBytes = if (pair) 4 else utf8Length(this[index])
+            if (bytes + charBytes > maxBytes) break
             bytes += charBytes
-            index += if (isPair) 2 else 1
+            index += if (pair) 2 else 1
         }
-        return this
+        return index
     }
 
+    /** Index at which the longest suffix within [maxBytes] begins, never splitting a code point. */
+    private fun String.suffixStartForUtf8Bytes(maxBytes: Int): Int {
+        var bytes = 0
+        var index = length
+        while (index > 0) {
+            val pair = index >= 2 && isSurrogatePairAt(index - 2)
+            val charBytes = if (pair) 4 else utf8Length(this[index - 1])
+            if (bytes + charBytes > maxBytes) break
+            bytes += charBytes
+            index -= if (pair) 2 else 1
+        }
+        return index
+    }
+
+    private fun String.utf8Size(): Int {
+        var bytes = 0
+        var index = 0
+        while (index < length) {
+            val pair = isSurrogatePairAt(index)
+            bytes += if (pair) 4 else utf8Length(this[index])
+            index += if (pair) 2 else 1
+        }
+        return bytes
+    }
+
+    private fun String.isSurrogatePairAt(index: Int): Boolean =
+        this[index].isHighSurrogate() && index + 1 < length && this[index + 1].isLowSurrogate()
+
+    /** An unpaired surrogate encodes to at most 3 bytes, so the 3-byte case bounds it too. */
     private fun utf8Length(char: Char): Int =
         when {
             char.code < 0x80 -> 1

@@ -122,7 +122,7 @@ class OtlpLogEncoderTest {
         val record = parseProto(bytes).message(1).message(2).message(2)
         val attr = parseProto(record.all(6).single().bytes())
         assertEquals("exception.stacktrace", attr.string(1))
-        assertEquals(32_000, attr.message(2).string(1).length)
+        assertTrue(attr.message(2).string(1).encodeToByteArray().size <= 32_000)
     }
 
     @Test
@@ -253,27 +253,59 @@ class OtlpLogEncoderTest {
 
         val value = attr.message(2).string(1)
         assertTrue(value.encodeToByteArray().size <= 32_000, "value is ${value.encodeToByteArray().size} B")
-        // Cut on a character boundary, not mid-character: 3 bytes per CJK character.
-        assertEquals(32_000 / 3, value.length)
+        // Whole characters either side of the marker: a cut mid-character encodes to '?' or U+FFFD.
+        assertTrue(value.startsWith("字") && value.endsWith("字"), "lost a boundary character")
+        assertTrue('?' !in value && '\uFFFD' !in value, "cut mid-character")
+    }
+
+    @Test
+    fun keepsTheTailSoACausedByChainSurvives() {
+        // stackTraceToString puts the frames at the head and the root cause at the very tail, so
+        // a head-only cut delivers a stacktrace with the one line anyone wanted missing.
+        val stacktrace =
+            "java.lang.IllegalStateException: boom\n" +
+                "\tat com.onesignal.Top.frame(Top.kt:1)\n".repeat(2_000) +
+                "Caused by: java.io.IOException: the actual root cause\n" +
+                "\tat com.onesignal.Root.cause(Root.kt:9)\n"
+
+        val attr = soleAttributeOf(recordWith(attributes = mapOf("exception.stacktrace" to stacktrace)))
+
+        val value = attr.message(2).string(1)
+        assertTrue(value.startsWith("java.lang.IllegalStateException: boom"), "lost the head")
+        assertTrue(value.endsWith("\tat com.onesignal.Root.cause(Root.kt:9)\n"), "lost the tail")
+        assertTrue("Caused by: java.io.IOException: the actual root cause" in value, "lost the root cause")
+        assertTrue("bytes elided" in value, "elision is unmarked")
     }
 
     @Test
     fun neverSplitsASurrogatePair() {
-        // The leading "a" puts the 32,000-byte boundary inside a 4-byte pair: 1 + 4 * 7_999 is
-        // 31,997, and one more pair overshoots. Half a pair on the wire is invalid UTF-8.
+        // Half a pair on the wire is invalid UTF-8, and both cut points can land inside one.
         val emoji = "\uD83D\uDCA5"
 
         val attr = soleAttributeOf(recordWith(attributes = mapOf("exception.message" to "a" + emoji.repeat(10_000))))
 
-        assertEquals("a" + emoji.repeat(7_999), attr.message(2).string(1))
+        val value = attr.message(2).string(1)
+        assertTrue(value.encodeToByteArray().size <= 32_000, "value is ${value.encodeToByteArray().size} B")
+        value.forEachIndexed { index, char ->
+            if (char.isHighSurrogate()) {
+                assertTrue(index + 1 < value.length && value[index + 1].isLowSurrogate(), "unpaired high at $index")
+            }
+            if (char.isLowSurrogate()) {
+                assertTrue(index > 0 && value[index - 1].isHighSurrogate(), "unpaired low at $index")
+            }
+        }
     }
 
     @Test
-    fun truncatesOversizedBody() {
+    fun elidesAnOversizedBody() {
         // The body was never truncated; a 200,000-character one is three times the request cap.
-        val record = recordWith(body = "x".repeat(200_000), attributes = emptyMap())
+        val body = ("head" + "x".repeat(200_000) + "tail")
 
-        assertEquals(32_000, record.message(5).string(1).length)
+        val value = recordWith(body = body, attributes = emptyMap()).message(5).string(1)
+
+        assertTrue(value.encodeToByteArray().size <= 32_000, "body is ${value.encodeToByteArray().size} B")
+        assertTrue(value.startsWith("head"))
+        assertTrue(value.endsWith("tail"))
     }
 
     @Test
