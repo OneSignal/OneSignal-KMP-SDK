@@ -37,6 +37,7 @@ class LogCrashTest {
                 exceptionType = "java.lang.NullPointerException",
                 exceptionMessage = "npe message",
                 stacktrace = "stack...",
+                attributed = true,
             ),
         )
 
@@ -61,7 +62,7 @@ class LogCrashTest {
         val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
 
         reporter.saveCrash(
-            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s"),
+            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s", attributed = true),
         )
 
         val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
@@ -80,7 +81,7 @@ class LogCrashTest {
         val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
 
         reporter.saveCrash(
-            CrashData(threadName = "main", exceptionType = "Anr", exceptionMessage = "blocked", stacktrace = "s"),
+            CrashData(threadName = "main", exceptionType = "Anr", exceptionMessage = "blocked", stacktrace = "s", attributed = true),
         )
 
         val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
@@ -97,7 +98,7 @@ class LogCrashTest {
         val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
 
         reporter.saveCrash(
-            CrashData(threadName = "", exceptionType = "E", exceptionMessage = "m", stacktrace = "s"),
+            CrashData(threadName = "", exceptionType = "E", exceptionMessage = "m", stacktrace = "s", attributed = true),
         )
 
         val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
@@ -112,7 +113,7 @@ class LogCrashTest {
         val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
 
         reporter.saveNonFatal(
-            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s"),
+            CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s", attributed = true),
         )
 
         val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
@@ -127,7 +128,7 @@ class LogCrashTest {
         val store = FakeFileStore()
         val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(provider, store)
         val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
-        val crash = CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s")
+        val crash = CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s", attributed = true)
 
         reporter.saveCrash(crash.copy(attributed = false))
         reporter.saveCrash(crash)

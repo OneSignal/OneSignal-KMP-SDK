@@ -11,11 +11,13 @@ package com.onesignal.logger
  *
  * @property attributed false when the platform could not prove the crash is ours. Those are
  *   captured anyway, so a failed attribution shows up in the data instead of a dropped report.
+ *   Deliberately has no default: every capture path has to state its verdict, so a host that
+ *   skips the check fails to compile rather than silently reporting the crash as proven.
  */
 data class CrashData(
     val threadName: String,
     val exceptionType: String,
     val exceptionMessage: String,
     val stacktrace: String,
-    val attributed: Boolean = true,
+    val attributed: Boolean,
 )
