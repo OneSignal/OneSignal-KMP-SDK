@@ -9,10 +9,8 @@ package com.onesignal.logger
  * so the platform is responsible for translating its native crash representation
  * into this neutral shape before handing it to [ILogCrashReporter].
  *
- * @property attributed false when the platform could not prove the crash is ours. Those are
- *   captured anyway, so a failed attribution shows up in the data instead of a dropped report.
- *   Deliberately has no default: every capture path has to state its verdict, so a host that
- *   skips the check fails to compile rather than silently reporting the crash as proven.
+ * @property attributed false when the platform could not prove the crash is ours, which is
+ *   retained rather than dropped so it shows up in the data. No default, on purpose.
  */
 data class CrashData(
     val threadName: String,
