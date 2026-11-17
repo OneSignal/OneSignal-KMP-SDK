@@ -10,7 +10,8 @@ package com.onesignal.logger
  * into this neutral shape before handing it to [ILogCrashReporter].
  *
  * @property attributed false when the platform could not prove the crash is ours, which is
- *   retained rather than dropped so it shows up in the data. No default, on purpose.
+ *   retained rather than dropped so it shows up in the data. No default on purpose: `true`
+ *   would silently mark every forgotten call site as proven.
  */
 data class CrashData(
     val threadName: String,
