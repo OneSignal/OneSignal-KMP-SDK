@@ -24,6 +24,10 @@ internal fun MutableMap<String, String>.putIfValueNotBlank(
 
 private const val OSSDK_PREFIX = "ossdk."
 
+// Shared with the crash reporter: its faulting-thread override only works while both
+// sides spell this key identically.
+internal const val ATTR_THREAD_NAME = "thread.name"
+
 /**
  * Hosts may pass bare suffixes (`java_version`) or accidentally include the
  * `ossdk.` prefix; normalize to the bare suffix so we never emit
@@ -139,7 +143,7 @@ internal class LogFieldsPerEvent(
 
         attributes["app.state"] = platformProvider.appState
         attributes["process.uptime"] = platformProvider.processUptime.toString()
-        attributes["thread.name"] = platformProvider.currentThreadName
+        attributes[ATTR_THREAD_NAME] = platformProvider.currentThreadName
 
         val enabledFlags = platformProvider.enabledFeatureFlags
         if (enabledFlags.isNotEmpty()) {

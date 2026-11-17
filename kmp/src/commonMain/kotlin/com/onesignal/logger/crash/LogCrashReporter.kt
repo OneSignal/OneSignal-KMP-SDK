@@ -6,6 +6,8 @@ import com.onesignal.logger.ILogTelemetryCrash
 import com.onesignal.logger.ILogger
 import com.onesignal.logger.LogRecord
 import com.onesignal.logger.LogSeverity
+import com.onesignal.logger.attributes.ATTR_THREAD_NAME
+import com.onesignal.logger.attributes.putIfValueNotBlank
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -39,14 +41,15 @@ internal class LogCrashReporter(
                 severity = severity,
                 body = body,
                 attributes =
-                mapOf(
-                    "exception.message" to crash.exceptionMessage,
-                    "exception.stacktrace" to crash.stacktrace,
-                    "exception.type" to crash.exceptionType,
-                    // Matches the top-level thread.name today, but kept distinct in
-                    // case future refactors report from a different thread.
-                    "ossdk.exception.thread.name" to crash.threadName,
-                ),
+                buildMap {
+                    put("exception.message", crash.exceptionMessage)
+                    put("exception.stacktrace", crash.stacktrace)
+                    put("exception.type", crash.exceptionType)
+                    // Overrides the per-event emitting thread: thread.name must name the thread
+                    // the record is about. For an ANR those differ (watchdog emits, main faults).
+                    // Blank would encode as present-but-unset, so fall through to the emitter.
+                    putIfValueNotBlank(ATTR_THREAD_NAME, crash.threadName)
+                },
                 // Explicit, SDK-owned fatal flag emitted as a typed OTLP bool. The backend can
                 // segment crash/ANR metrics on this stable attribute rather than inferring intent
                 // from severity or exception.type alone, so a non-fatal record can never be

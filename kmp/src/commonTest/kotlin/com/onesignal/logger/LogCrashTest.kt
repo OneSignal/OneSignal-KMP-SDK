@@ -8,6 +8,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 class LogCrashTest {
@@ -45,7 +46,8 @@ class LogCrashTest {
         val attrKeys = record.all(6).map { parseProto(it.bytes()).string(1) }
         assertTrue("exception.type" in attrKeys)
         assertTrue("exception.message" in attrKeys)
-        assertTrue("ossdk.exception.thread.name" in attrKeys)
+        assertTrue("thread.name" in attrKeys)
+        assertFalse("ossdk.exception.thread.name" in attrKeys)
         val resourceAttrKeys =
             parseProto(store.entries[0].bytes).message(1).message(1).all(1).map { parseProto(it.bytes()).string(1) }
         assertTrue("service.name" in resourceAttrKeys)
@@ -69,6 +71,40 @@ class LogCrashTest {
     }
 
     @Test
+    fun crashRecordThreadNameIsTheFaultingThreadNotTheEmittingThread() = runTest {
+        // The ANR path emits from the watchdog while main is the faulting thread; the
+        // record's thread.name has to win over the per-event emitting thread.
+        val provider = FakePlatformProvider(currentThreadName = "OneSignal-Log-ANR-Watchdog")
+        val store = FakeFileStore()
+        val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(provider, store)
+        val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
+
+        reporter.saveCrash(
+            CrashData(threadName = "main", exceptionType = "Anr", exceptionMessage = "blocked", stacktrace = "s"),
+        )
+
+        val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
+        assertEquals(listOf("main"), stringAttribute(record, "thread.name"))
+        // The override must not shadow per-event attrs the crash dashboard also filters on.
+        assertEquals(listOf("foreground"), stringAttribute(record, "app.state"))
+    }
+
+    @Test
+    fun blankCrashThreadNameFallsBackToTheEmittingThread() = runTest {
+        val provider = FakePlatformProvider(currentThreadName = "OneSignal-Log-ANR-Watchdog")
+        val store = FakeFileStore()
+        val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(provider, store)
+        val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
+
+        reporter.saveCrash(
+            CrashData(threadName = "", exceptionType = "E", exceptionMessage = "m", stacktrace = "s"),
+        )
+
+        val record = parseProto(store.entries[0].bytes).message(1).message(2).message(2)
+        assertEquals(listOf("OneSignal-Log-ANR-Watchdog"), stringAttribute(record, "thread.name"))
+    }
+
+    @Test
     fun saveNonFatalEmitsWarnSeverityTaggedFatalFalse() = runTest {
         val provider = FakePlatformProvider()
         val store = FakeFileStore()
@@ -84,6 +120,13 @@ class LogCrashTest {
         assertEquals(13L, record.first(2).varint)
         assertEquals(0L, fatalFlag(record))
     }
+
+    // Reads every AnyValue.string_value stored under [key] on an encoded LogRecord message.
+    private fun stringAttribute(record: ProtoMessage, key: String): List<String> =
+        record.all(6)
+            .map { parseProto(it.bytes()) }
+            .filter { it.string(1) == key }
+            .map { it.message(2).string(1) }
 
     // Reads the ossdk.crash.fatal AnyValue.bool_value (0/1) from an encoded LogRecord message.
     private fun fatalFlag(record: ProtoMessage): Long =
