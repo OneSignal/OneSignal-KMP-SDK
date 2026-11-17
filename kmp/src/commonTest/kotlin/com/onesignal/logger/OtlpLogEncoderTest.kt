@@ -363,6 +363,35 @@ class OtlpLogEncoderTest {
     }
 
     @Test
+    fun keepsAShortAttributeThatRepeatsTheBody() {
+        // A throwable with no message leaves LogCrashReporter using the type as the body, so
+        // exception.type repeats it. Dropping that as a duplicate would strip the only name the
+        // record has left, and save nothing: it is far below any share.
+        val type = "java.lang.StackOverflowError"
+        val record =
+            EncodableRecord(
+                severity = LogSeverity.FATAL,
+                body = type,
+                attributes =
+                mapOf(
+                    "exception.stacktrace" to "$type\n" + "\tat com.onesignal.A.b(A.kt:1)\n".repeat(2_000),
+                    "exception.type" to type,
+                    "ossdk.first_dump" to "x".repeat(50_000),
+                    "ossdk.second_dump" to "y".repeat(50_000),
+                    "thread.name" to "main",
+                ),
+                timeUnixNanos = 1L,
+            )
+
+        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, record, OtlpLogEncoder.MAX_PAYLOAD_BYTES)
+
+        assertTrue(payload.size <= OtlpLogEncoder.MAX_PAYLOAD_BYTES, "payload is ${payload.size} B")
+        val logRecord = parseProto(payload).message(1).message(2).message(2)
+        val keys = logRecord.all(6).map { parseProto(it.bytes()).string(1) }
+        assertTrue("exception.type" in keys, "the only name the record has left was dropped: $keys")
+    }
+
+    @Test
     fun keepsAnAttributeThatRepeatsTheBodyWhenTheRecordFits() {
         val record =
             EncodableRecord(

@@ -261,9 +261,13 @@ internal object OtlpLogEncoder {
         if (pending.sumOf { fieldCost(it.encoded) } <= budget) return pending.map { it.encoded }
         val fitted = arrayOfNulls<ByteArray>(pending.size)
         // An attribute repeating the body verbatim (a crash record's exception.message) is
-        // recoverable from it, so it drops instead of taking a share off everything else.
+        // recoverable from it, so it drops instead of taking a share off everything else. Only
+        // one big enough to claim a share: a message-less crash body is the exception type, and
+        // dropping the exception.type that matches it would cost a filter and save nothing.
         val body = pending.first().value
-        val contending = pending.indices.filter { it == 0 || pending[it].value != body }
+        val share = budget / pending.size
+        val contending =
+            pending.indices.filter { it == 0 || pending[it].value != body || fieldCost(pending[it].encoded) <= share }
         var remaining = budget
         var unallocated = contending.size
         for (index in contending.sortedBy { fieldCost(pending[it].encoded) }) {
