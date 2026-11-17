@@ -131,9 +131,13 @@ class LogCrashTest {
 
         reporter.saveCrash(crash.copy(attributed = false))
         reporter.saveCrash(crash)
+        reporter.saveNonFatal(crash.copy(attributed = false))
+        reporter.saveNonFatal(crash)
 
         assertEquals(0L, boolFlag(logRecord(store, 0), "ossdk.crash.attributed"))
         assertEquals(1L, boolFlag(logRecord(store, 1), "ossdk.crash.attributed"))
+        assertEquals(0L, boolFlag(logRecord(store, 2), "ossdk.crash.attributed"))
+        assertEquals(1L, boolFlag(logRecord(store, 3), "ossdk.crash.attributed"))
     }
 
     // Reads every AnyValue.string_value stored under [key] on an encoded LogRecord message.
