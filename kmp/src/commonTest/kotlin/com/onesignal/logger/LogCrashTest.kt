@@ -155,6 +155,24 @@ class LogCrashTest {
     }
 
     @Test
+    fun uploaderSkipsAnOverCapReportWithoutHoldingBackTheRest() = runTest {
+        val provider = FakePlatformProvider(minFileAgeForReadMillis = 0)
+        val store = FakeFileStore()
+        // Written before the encoder bounded record size, so it predates the fix on disk.
+        store.seed("legacy", ByteArray(70_000), ageMillis = Long.MAX_VALUE)
+        store.seed("f1", "payload1".encodeToByteArray(), ageMillis = Long.MAX_VALUE)
+        val http = FakeHttpSender()
+        val uploader =
+            LoggerFactory.createCrashUploader(provider, remote(backgroundScope, provider, http), store, RecordingLogger())
+
+        uploader.start()
+
+        // The over-cap report is never posted, and the one behind it still goes out.
+        assertEquals(listOf("payload1"), http.sentRequests.map { it.body.decodeToString() })
+        assertEquals(listOf("f1"), store.deletedIds)
+    }
+
+    @Test
     fun uploaderStopsOnFailureAndKeepsReports() = runTest {
         val provider = FakePlatformProvider()
         val store = FakeFileStore()

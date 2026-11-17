@@ -122,7 +122,7 @@ class OtlpLogEncoderTest {
         val record = parseProto(bytes).message(1).message(2).message(2)
         val attr = parseProto(record.all(6).single().bytes())
         assertEquals("exception.stacktrace", attr.string(1))
-        assertEquals(32_000, attr.message(2).string(1).length)
+        assertTrue(attr.message(2).string(1).encodeToByteArray().size <= 32_000)
     }
 
     @Test
@@ -231,17 +231,242 @@ class OtlpLogEncoderTest {
     }
 
     @Test
-    fun encodeChunkedEmitsSingleOversizedRecordRatherThanDroppingIt() {
-        // One record cannot be split further, and is lost either way. Posting it keeps the loss
-        // visible in the ingestion service's reject metrics instead of vanishing on-device.
+    fun encodeChunkedTrimsSingleOversizedRecordUnderTheCap() {
+        // A batch of one cannot be bisected, so the record itself is trimmed. Posting it whole
+        // means a 403 at the WAF and silent loss of the record.
         val record = bulkyRecord("huge", valueLength = 32_000)
 
         val payloads = OtlpLogEncoder.encodeChunked(RESOURCE_ATTRS, listOf(record), maxPayloadBytes = 1_024)
 
         assertEquals(1, payloads.size)
-        assertTrue(payloads.single().size > 1_024)
+        assertTrue(payloads.single().size <= 1_024, "payload of ${payloads.single().size} B exceeds the cap")
         assertEquals(listOf("huge"), bodiesIn(payloads.single()))
     }
+
+    @Test
+    fun truncatesAttributeValuesByBytesNotCharacters() {
+        // The character-based limit let a 32,000-character CJK stacktrace reach 96,000 bytes,
+        // over the whole-request cap on its own.
+        val cjk = "字".repeat(32_000)
+
+        val attr = soleAttributeOf(recordWith(attributes = mapOf("exception.stacktrace" to cjk)))
+
+        val value = attr.message(2).string(1)
+        assertTrue(value.encodeToByteArray().size <= 32_000, "value is ${value.encodeToByteArray().size} B")
+        // Whole characters either side of the marker: a cut mid-character encodes to '?' or U+FFFD.
+        assertTrue(value.startsWith("字") && value.endsWith("字"), "lost a boundary character")
+        assertTrue('?' !in value && '\uFFFD' !in value, "cut mid-character")
+    }
+
+    @Test
+    fun keepsTheTailSoACausedByChainSurvives() {
+        // stackTraceToString puts the frames at the head and the root cause at the very tail, so
+        // a head-only cut delivers a stacktrace with the one line anyone wanted missing.
+        val stacktrace =
+            "java.lang.IllegalStateException: boom\n" +
+                "\tat com.onesignal.Top.frame(Top.kt:1)\n".repeat(2_000) +
+                "Caused by: java.io.IOException: the actual root cause\n" +
+                "\tat com.onesignal.Root.cause(Root.kt:9)\n"
+
+        val attr = soleAttributeOf(recordWith(attributes = mapOf("exception.stacktrace" to stacktrace)))
+
+        val value = attr.message(2).string(1)
+        assertTrue(value.startsWith("java.lang.IllegalStateException: boom"), "lost the head")
+        assertTrue(value.endsWith("\tat com.onesignal.Root.cause(Root.kt:9)\n"), "lost the tail")
+        assertTrue("Caused by: java.io.IOException: the actual root cause" in value, "lost the root cause")
+        assertTrue("bytes elided" in value, "elision is unmarked")
+    }
+
+    @Test
+    fun neverSplitsASurrogatePair() {
+        // Half a pair on the wire is invalid UTF-8, and both cut points can land inside one.
+        val emoji = "\uD83D\uDCA5"
+
+        val attr = soleAttributeOf(recordWith(attributes = mapOf("exception.message" to "a" + emoji.repeat(10_000))))
+
+        val value = attr.message(2).string(1)
+        assertTrue(value.encodeToByteArray().size <= 32_000, "value is ${value.encodeToByteArray().size} B")
+        value.forEachIndexed { index, char ->
+            if (char.isHighSurrogate()) {
+                assertTrue(index + 1 < value.length && value[index + 1].isLowSurrogate(), "unpaired high at $index")
+            }
+            if (char.isLowSurrogate()) {
+                assertTrue(index > 0 && value[index - 1].isHighSurrogate(), "unpaired low at $index")
+            }
+        }
+    }
+
+    @Test
+    fun elidesAnOversizedBody() {
+        // The body was never truncated; a 200,000-character one is three times the request cap.
+        val body = ("head" + "x".repeat(200_000) + "tail")
+
+        val value = recordWith(body = body, attributes = emptyMap()).message(5).string(1)
+
+        assertTrue(value.encodeToByteArray().size <= 32_000, "body is ${value.encodeToByteArray().size} B")
+        assertTrue(value.startsWith("head"))
+        assertTrue(value.endsWith("tail"))
+    }
+
+    @Test
+    fun keepsSmallAttributesWhenTrimmingALoneOversizedRecord() {
+        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, cjkCrashRecord(), OtlpLogEncoder.MAX_PAYLOAD_BYTES)
+
+        assertTrue(payload.size <= OtlpLogEncoder.MAX_PAYLOAD_BYTES, "payload is ${payload.size} B")
+        val logRecord = parseProto(payload).message(1).message(2).message(2)
+        val attributes = logRecord.all(6).map { parseProto(it.bytes()) }.associate { it.string(1) to it.message(2) }
+        assertTrue(
+            setOf("exception.type", "log.record.uid", "ossdk.app_id", "ossdk.crash.fatal", "thread.name")
+                .all { it in attributes.keys },
+            "an identity attribute was crowded out: ${attributes.keys}",
+        )
+        assertEquals("main", attributes.getValue("thread.name").string(1))
+        assertEquals(1L, attributes.getValue("ossdk.crash.fatal").first(2).varint)
+    }
+
+    @Test
+    fun theBodyCompetesForBudgetRatherThanReservingItsOwn() {
+        // Three distinct large values and no duplicate, so only the body's own allocation is in
+        // play. Reserving it 32,000 bytes before the rest were weighed left them 16,000 each.
+        val record =
+            EncodableRecord(
+                severity = LogSeverity.ERROR,
+                body = "b".repeat(50_000),
+                attributes = mapOf("first" to "f".repeat(50_000), "second" to "s".repeat(50_000)),
+                timeUnixNanos = 1L,
+            )
+
+        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, record, OtlpLogEncoder.MAX_PAYLOAD_BYTES)
+
+        val logRecord = parseProto(payload).message(1).message(2).message(2)
+        val sizes =
+            (
+                listOf(logRecord.message(5).string(1)) +
+                    logRecord.all(6).map { parseProto(it.bytes()).message(2).string(1) }
+                ).map { it.encodeToByteArray().size }
+        // An even three-way split is about 21,500 each; the body hogging its reserve shows as 32,000.
+        assertTrue(sizes.min() > 19_000, "shares are lopsided: $sizes")
+        assertTrue(sizes.max() < 24_000, "a value took ${sizes.max()} B of the record")
+    }
+
+    @Test
+    fun dropsAnAttributeThatRepeatsTheBody() {
+        // exception.message is the body verbatim on every crash record, so when the record is over
+        // budget the copy is recoverable from the body and shrinking both halves the stacktrace.
+        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, cjkCrashRecord(), OtlpLogEncoder.MAX_PAYLOAD_BYTES)
+
+        val logRecord = parseProto(payload).message(1).message(2).message(2)
+        val keys = logRecord.all(6).map { parseProto(it.bytes()).string(1) }
+        assertTrue("exception.message" !in keys, "the duplicate survived: $keys")
+        // Dropping it is only honest if the record says so.
+        assertEquals(1L, logRecord.first(7).varint)
+    }
+
+    @Test
+    fun keepsAShortAttributeThatRepeatsTheBody() {
+        // A throwable with no message leaves LogCrashReporter using the type as the body, so
+        // exception.type repeats it. Dropping that as a duplicate would strip the only name the
+        // record has left, and save nothing: it is far below any share.
+        val type = "java.lang.StackOverflowError"
+        val record =
+            EncodableRecord(
+                severity = LogSeverity.FATAL,
+                body = type,
+                attributes =
+                mapOf(
+                    "exception.stacktrace" to "$type\n" + "\tat com.onesignal.A.b(A.kt:1)\n".repeat(2_000),
+                    "exception.type" to type,
+                    "ossdk.first_dump" to "x".repeat(50_000),
+                    "ossdk.second_dump" to "y".repeat(50_000),
+                    "thread.name" to "main",
+                ),
+                timeUnixNanos = 1L,
+            )
+
+        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, record, OtlpLogEncoder.MAX_PAYLOAD_BYTES)
+
+        assertTrue(payload.size <= OtlpLogEncoder.MAX_PAYLOAD_BYTES, "payload is ${payload.size} B")
+        val logRecord = parseProto(payload).message(1).message(2).message(2)
+        val keys = logRecord.all(6).map { parseProto(it.bytes()).string(1) }
+        assertTrue("exception.type" in keys, "the only name the record has left was dropped: $keys")
+    }
+
+    @Test
+    fun keepsAnAttributeThatRepeatsTheBodyWhenTheRecordFits() {
+        val record =
+            EncodableRecord(
+                severity = LogSeverity.ERROR,
+                body = "boom",
+                attributes = mapOf("exception.message" to "boom"),
+                timeUnixNanos = 1L,
+            )
+
+        val payload = OtlpLogEncoder.encodeBounded(RESOURCE_ATTRS, record, OtlpLogEncoder.MAX_PAYLOAD_BYTES)
+
+        val logRecord = parseProto(payload).message(1).message(2).message(2)
+        assertEquals(listOf("exception.message"), logRecord.all(6).map { parseProto(it.bytes()).string(1) })
+        assertTrue(logRecord.all(7).isEmpty())
+    }
+
+    /** Shaped like LogCrashReporter builds one: the body is the message, and the attribute repeats it. */
+    private fun cjkCrashRecord(): EncodableRecord {
+        val message = "字".repeat(20_000)
+        return EncodableRecord(
+            severity = LogSeverity.FATAL,
+            body = message,
+            attributes =
+            mapOf(
+                "exception.message" to message,
+                "exception.stacktrace" to "java.lang.IllegalStateException: $message\n" + "\tat com.onesignal.A.b(A.kt:1)\n".repeat(500),
+                "exception.type" to "java.lang.IllegalStateException",
+                "log.record.uid" to "a-b-c",
+                "ossdk.app_id" to "app",
+                "thread.name" to "main",
+            ),
+            timeUnixNanos = 1L,
+            boolAttributes = mapOf("ossdk.crash.fatal" to true),
+        )
+    }
+
+    @Test
+    fun reportsDroppedAttributeCount() {
+        // Attribute loss was silent; OTLP has a field for it.
+        val manyAttrs = (0 until 200).associate { "k${it.toString().padStart(3, '0')}" to "v$it" }
+
+        val record = recordWith(attributes = manyAttrs)
+
+        assertEquals(128, record.all(6).size)
+        assertEquals(72L, record.first(7).varint)
+    }
+
+    @Test
+    fun omitsDroppedAttributeCountWhenNothingIsDropped() {
+        val record = recordWith(attributes = mapOf("exception.type" to "E"))
+
+        assertTrue(record.all(7).isEmpty())
+    }
+
+    private fun recordWith(
+        body: String = "boom",
+        attributes: Map<String, String>,
+    ): ProtoMessage {
+        val bytes =
+            OtlpLogEncoder.encode(
+                resourceAttributes = emptyMap(),
+                records =
+                listOf(
+                    EncodableRecord(
+                        severity = LogSeverity.ERROR,
+                        body = body,
+                        attributes = attributes,
+                        timeUnixNanos = 1L,
+                    ),
+                ),
+            )
+        return parseProto(bytes).message(1).message(2).message(2)
+    }
+
+    private fun soleAttributeOf(record: ProtoMessage): ProtoMessage = parseProto(record.all(6).single().bytes())
 
     private fun bulkyRecord(body: String, valueLength: Int) =
         EncodableRecord(

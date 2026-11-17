@@ -4,6 +4,7 @@ import com.onesignal.logger.ILogFileStore
 import com.onesignal.logger.ILogTelemetryRemote
 import com.onesignal.logger.ILogger
 import com.onesignal.logger.ILoggerPlatformProvider
+import com.onesignal.logger.otlp.OtlpLogEncoder
 import kotlinx.coroutines.delay
 import kotlin.coroutines.cancellation.CancellationException
 
@@ -85,6 +86,15 @@ class LogCrashUploader internal constructor(
         )
         var sent = 0
         for (report in reports) {
+            // Stored before the encoder bounded record size. The WAF rejects it however many times
+            // it is retried, and stopping here would hold back every report queued behind it.
+            if (report.bytes.size > OtlpLogEncoder.MAX_PAYLOAD_BYTES) {
+                logger.warn(
+                    "LogCrashUploader: skipping id=${report.id} bytes=${report.bytes.size}, " +
+                        "over the ${OtlpLogEncoder.MAX_PAYLOAD_BYTES} B request cap",
+                )
+                continue
+            }
             logger.debug(
                 "LogCrashUploader: posting id=${report.id} bytes=${report.bytes.size} " +
                     "(OTLP/protobuf payload)",
