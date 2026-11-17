@@ -85,14 +85,39 @@ class LogCrashTest {
         assertEquals(0L, fatalFlag(record))
     }
 
-    // Reads the ossdk.crash.fatal AnyValue.bool_value (0/1) from an encoded LogRecord message.
-    private fun fatalFlag(record: ProtoMessage): Long =
+    @Test
+    fun saveCrashTagsAttributionFromCrashData() = runTest {
+        val provider = FakePlatformProvider()
+        val store = FakeFileStore()
+        val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(provider, store)
+        val reporter = LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger())
+        val crash = CrashData(threadName = "main", exceptionType = "E", exceptionMessage = "m", stacktrace = "s")
+
+        reporter.saveCrash(crash.copy(attributed = false))
+        reporter.saveCrash(crash)
+
+        assertEquals(0L, boolFlag(logRecord(store, 0), "ossdk.crash.attributed"))
+        assertEquals(1L, boolFlag(logRecord(store, 1), "ossdk.crash.attributed"))
+    }
+
+    private fun logRecord(
+        store: FakeFileStore,
+        index: Int,
+    ): ProtoMessage = parseProto(store.entries[index].bytes).message(1).message(2).message(2)
+
+    // Reads a named AnyValue.bool_value (0/1) from an encoded LogRecord message.
+    private fun boolFlag(
+        record: ProtoMessage,
+        key: String,
+    ): Long =
         record.all(6)
             .map { parseProto(it.bytes()) }
-            .single { it.string(1) == "ossdk.crash.fatal" }
+            .single { it.string(1) == key }
             .message(2)
             .first(2)
             .varint
+
+    private fun fatalFlag(record: ProtoMessage): Long = boolFlag(record, "ossdk.crash.fatal")
 
     @Test
     fun uploaderSendsReadableReportsAndDeletesOnSuccess() = runTest {

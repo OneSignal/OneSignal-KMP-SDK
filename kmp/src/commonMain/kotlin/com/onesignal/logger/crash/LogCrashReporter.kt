@@ -51,7 +51,11 @@ internal class LogCrashReporter(
                 // segment crash/ANR metrics on this stable attribute rather than inferring intent
                 // from severity or exception.type alone, so a non-fatal record can never be
                 // double-counted as a crash even if a mapping changes.
-                boolAttributes = mapOf(OSSDK_CRASH_FATAL to fatal),
+                boolAttributes =
+                mapOf(
+                    OSSDK_CRASH_FATAL to fatal,
+                    OSSDK_CRASH_ATTRIBUTED to crash.attributed,
+                ),
             )
 
         try {
@@ -68,5 +72,9 @@ internal class LogCrashReporter(
 
     private companion object {
         const val OSSDK_CRASH_FATAL = "ossdk.crash.fatal"
+
+        // Lets the backend separate crashes proven to be ours from those a platform captured
+        // because it could not tell, rather than making capture itself the filter.
+        const val OSSDK_CRASH_ATTRIBUTED = "ossdk.crash.attributed"
     }
 }
