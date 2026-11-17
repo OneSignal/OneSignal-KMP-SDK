@@ -14,4 +14,7 @@ data class CrashData(
     val exceptionType: String,
     val exceptionMessage: String,
     val stacktrace: String,
+    // False when the platform could not prove the crash is ours. Those are captured anyway, so a
+    // failed attribution shows up in the data instead of silently dropping the report.
+    val attributed: Boolean = true,
 )
