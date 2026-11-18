@@ -28,6 +28,10 @@ private const val OSSDK_PREFIX = "ossdk."
 // sides spell this key identically.
 internal const val ATTR_THREAD_NAME = "thread.name"
 
+// Same contract as ATTR_THREAD_NAME: the crash reporter overrides this for records about a
+// process other than the live one, which only works while both sides agree on the key.
+internal const val ATTR_APP_STATE = "app.state"
+
 /**
  * Hosts may pass bare suffixes (`java_version`) or accidentally include the
  * `ossdk.` prefix; normalize to the bare suffix so we never emit
@@ -141,7 +145,7 @@ internal class LogFieldsPerEvent(
             .putIfValueNotNull("ossdk.onesignal_id", platformProvider.onesignalId)
             .putIfValueNotNull("ossdk.push_subscription_id", platformProvider.pushSubscriptionId)
 
-        attributes["app.state"] = platformProvider.appState
+        attributes[ATTR_APP_STATE] = platformProvider.appState
         attributes["process.uptime"] = platformProvider.processUptime.toString()
         attributes[ATTR_THREAD_NAME] = platformProvider.currentThreadName
 

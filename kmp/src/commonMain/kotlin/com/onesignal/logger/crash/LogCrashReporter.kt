@@ -6,6 +6,7 @@ import com.onesignal.logger.ILogTelemetryCrash
 import com.onesignal.logger.ILogger
 import com.onesignal.logger.LogRecord
 import com.onesignal.logger.LogSeverity
+import com.onesignal.logger.attributes.ATTR_APP_STATE
 import com.onesignal.logger.attributes.ATTR_THREAD_NAME
 import com.onesignal.logger.attributes.putIfValueNotBlank
 import kotlinx.coroutines.runBlocking
@@ -49,6 +50,9 @@ internal class LogCrashReporter(
                     // the record is about. For an ANR those differ (watchdog emits, main faults).
                     // Blank would encode as present-but-unset, so fall through to the emitter.
                     putIfValueNotBlank(ATTR_THREAD_NAME, crash.threadName)
+                    // Same override, for a report about a process that is already gone: the live
+                    // provider would describe the process doing the reading instead.
+                    putIfValueNotBlank(ATTR_APP_STATE, crash.appState)
                 },
                 // Explicit, SDK-owned fatal flag emitted as a typed OTLP bool. The backend can
                 // segment crash/ANR metrics on this stable attribute rather than inferring intent
@@ -59,6 +63,9 @@ internal class LogCrashReporter(
                     OSSDK_CRASH_FATAL to fatal,
                     OSSDK_CRASH_ATTRIBUTED to crash.attributed,
                 ),
+                // Null keeps the sink's own "now", which is right for a live capture. A
+                // post-mortem report must carry the time of death, or it lands on the wrong day.
+                timestampNanos = eventTimeNanos(crash.occurredAtMs),
             )
 
         try {
@@ -73,11 +80,29 @@ internal class LogCrashReporter(
         }
     }
 
+    /**
+     * Null falls back to the sink clock. Zero must not reach the record: it is non-null, so the
+     * sink's `?: now` would not fire, and it encodes as 1970 rather than as "unset".
+     */
+    private fun eventTimeNanos(occurredAtMs: Long?): Long? {
+        if (occurredAtMs == null) return null
+        if (occurredAtMs !in 1..MAX_OCCURRED_AT_MS) {
+            logger.warn("LogCrashReporter: ignoring implausible occurredAtMs=$occurredAtMs, using the record time")
+            return null
+        }
+        return occurredAtMs * NANOS_PER_MILLI
+    }
+
     private companion object {
         const val OSSDK_CRASH_FATAL = "ossdk.crash.fatal"
 
         // Lets the backend separate crashes proven to be ours from those a platform captured
         // because it could not tell, rather than making capture itself the filter.
         const val OSSDK_CRASH_ATTRIBUTED = "ossdk.crash.attributed"
+
+        const val NANOS_PER_MILLI = 1_000_000L
+
+        // Above this the conversion to nanos overflows Long.
+        const val MAX_OCCURRED_AT_MS = Long.MAX_VALUE / NANOS_PER_MILLI
     }
 }

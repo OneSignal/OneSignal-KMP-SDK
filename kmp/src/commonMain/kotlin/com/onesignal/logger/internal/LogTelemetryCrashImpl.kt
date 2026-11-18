@@ -30,13 +30,17 @@ internal class LogTelemetryCrashImpl(
         // Record attributes must win: a crash record's thread.name is the faulting thread,
         // which the per-event emitting thread would otherwise overwrite.
         val merged = perEventFields.getAttributes() + record.attributes
+        val observedNanos = epochNanosNow()
         val encodable =
             EncodableRecord(
                 severity = record.severity,
                 body = record.body,
                 attributes = merged,
-                timeUnixNanos = record.timestampNanos ?: epochNanosNow(),
+                timeUnixNanos = record.timestampNanos ?: observedNanos,
                 boolAttributes = record.boolAttributes,
+                // Stays "now" even when the event time is backdated: a post-mortem report is
+                // observed on this launch, and that gap is how a late report is recognizable.
+                observedTimeUnixNanos = observedNanos,
             )
         // Bounded at capture time: the uploader posts these bytes verbatim, one record per
         // request, so there is no later point at which an over-cap record could be split.

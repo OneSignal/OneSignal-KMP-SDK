@@ -16,6 +16,9 @@ internal data class EncodableRecord(
     // separate from [attributes] so a flag like `ossdk.crash.fatal` matches the typed
     // attribute the OpenTelemetry SDK previously produced.
     val boolAttributes: Map<String, Boolean> = emptyMap(),
+    // When we recorded the event, as distinct from when it happened. They differ only for a
+    // report about an earlier process; defaulting to [timeUnixNanos] keeps live capture equal.
+    val observedTimeUnixNanos: Long = timeUnixNanos,
 )
 
 /**
@@ -227,7 +230,7 @@ internal object OtlpLogEncoder {
             if (encoded != null) writer.writeLengthDelimited(pending[index].field, encoded) else dropped++
         }
 
-        writer.writeFixed64(FIELD_LR_OBSERVED_TIME_UNIX_NANO, record.timeUnixNanos)
+        writer.writeFixed64(FIELD_LR_OBSERVED_TIME_UNIX_NANO, record.observedTimeUnixNanos)
         if (dropped > 0) writer.writeVarintField(FIELD_LR_DROPPED_ATTRIBUTES_COUNT, dropped.toLong())
         return writer.toByteArray()
     }

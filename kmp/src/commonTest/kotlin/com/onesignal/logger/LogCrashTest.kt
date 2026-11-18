@@ -92,6 +92,55 @@ class LogCrashTest {
     }
 
     @Test
+    fun postMortemCrashOverridesAppStateAndEventTime() = runTest {
+        // A report read on the next launch describes a process that is already gone, so the live
+        // provider's "foreground" and the sink's "now" both describe the wrong process.
+        val record = savePostMortem(occurredAtMs = 1_700_000_000_123L, appState = "background")
+
+        assertEquals(listOf("background"), stringAttribute(record, "app.state"))
+        assertEquals(1_700_000_000_123_000_000L, eventTimeNanos(record))
+    }
+
+    @Test
+    fun postMortemCrashIsObservedNowEvenThoughItHappenedEarlier() = runTest {
+        // The gap between the two is what makes a late report recognizable as late; collapsing
+        // them would make a days-old death indistinguishable from a live crash.
+        val record = savePostMortem(occurredAtMs = 1_700_000_000_123L, appState = "background")
+
+        assertEquals(1_700_000_000_123_000_000L, eventTimeNanos(record))
+        assertTrue(observedTimeNanos(record) > eventTimeNanos(record))
+    }
+
+    @Test
+    fun liveCrashIsObservedAtTheSameInstantItHappened() = runTest {
+        val record = savePostMortem(occurredAtMs = null, appState = null)
+
+        assertEquals(listOf("foreground"), stringAttribute(record, "app.state"))
+        assertEquals(eventTimeNanos(record), observedTimeNanos(record))
+        // Rules out 0, seconds and millis-mistaken-for-nanos, which a bare `> 0` would accept.
+        assertTrue(eventTimeNanos(record) > 1_700_000_000_000_000_000L)
+    }
+
+    @Test
+    fun blankPostMortemAppStateFallsBackToTheLiveProcessState() = runTest {
+        val record = savePostMortem(occurredAtMs = null, appState = "")
+
+        assertEquals(listOf("foreground"), stringAttribute(record, "app.state"))
+    }
+
+    @Test
+    fun implausibleOccurredAtMsFallsBackToTheRecordTime() = runTest {
+        // Zero is the dangerous one: non-null, so the sink's `?: now` would not fire, and it
+        // encodes as 1970 rather than as unset.
+        for (occurredAtMs in listOf(0L, -1L, Long.MAX_VALUE, Long.MAX_VALUE / 1_000_000L + 1)) {
+            val record = savePostMortem(occurredAtMs = occurredAtMs, appState = null)
+
+            assertEquals(eventTimeNanos(record), observedTimeNanos(record), "occurredAtMs=$occurredAtMs")
+            assertTrue(eventTimeNanos(record) > 1_700_000_000_000_000_000L, "occurredAtMs=$occurredAtMs")
+        }
+    }
+
+    @Test
     fun blankCrashThreadNameFallsBackToTheEmittingThread() = runTest {
         val provider = FakePlatformProvider(currentThreadName = "OneSignal-Log-ANR-Watchdog")
         val store = FakeFileStore()
@@ -191,6 +240,35 @@ class LogCrashTest {
             .varint
 
     private fun fatalFlag(record: ProtoMessage): Long = boolFlag(record, "ossdk.crash.fatal")
+
+    // Both are fixed64, so assert the wire type here rather than in every caller.
+    private fun fixed64(record: ProtoMessage, field: Int): Long =
+        record.first(field).also { assertEquals(1, it.wireType) }.varint
+
+    private fun eventTimeNanos(record: ProtoMessage): Long = fixed64(record, 1)
+
+    private fun observedTimeNanos(record: ProtoMessage): Long = fixed64(record, 11)
+
+    /** Saves one fatal report and returns its encoded LogRecord. */
+    private fun savePostMortem(
+        occurredAtMs: Long?,
+        appState: String?,
+    ): ProtoMessage {
+        val store = FakeFileStore()
+        val crashTelemetry = LoggerFactory.createCrashLocalTelemetry(FakePlatformProvider(), store)
+        LoggerFactory.createCrashReporter(crashTelemetry, RecordingLogger()).saveCrash(
+            CrashData(
+                threadName = "main",
+                exceptionType = "Anr",
+                exceptionMessage = "blocked",
+                stacktrace = "s",
+                attributed = true,
+                appState = appState,
+                occurredAtMs = occurredAtMs,
+            ),
+        )
+        return logRecord(store, 0)
+    }
 
     @Test
     fun uploaderSendsReadableReportsAndDeletesOnSuccess() = runTest {

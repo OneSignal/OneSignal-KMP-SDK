@@ -81,13 +81,15 @@ internal class LogTelemetryRemoteImpl(
 
     override suspend fun emit(record: LogRecord) {
         val merged = perEventFields.getAttributes() + record.attributes
+        val observedNanos = epochNanosNow()
         batchProcessor.enqueue(
             EncodableRecord(
                 severity = record.severity,
                 body = record.body,
                 attributes = merged,
-                timeUnixNanos = record.timestampNanos ?: epochNanosNow(),
+                timeUnixNanos = record.timestampNanos ?: observedNanos,
                 boolAttributes = record.boolAttributes,
+                observedTimeUnixNanos = observedNanos,
             ),
         )
     }
